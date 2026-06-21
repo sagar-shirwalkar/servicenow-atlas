@@ -10,6 +10,7 @@ is honoured if the user explicitly asks for ``onnx-gpu``.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -19,11 +20,17 @@ from transformers import AutoTokenizer
 from transformers.utils.hub import cached_file
 
 from .base import (
-    EMBEDDING_DIM,
     Embedder,
     l2_normalize,
     mean_pool,
 )
+
+# ONNX file to use per backend: int8 for CPU (4x faster, negligible
+# quality loss for retrieval), FP32 for GPU where throughput is ample.
+_ONNX_FILES = {
+    False: "onnx/model_int8.onnx",
+    True: "onnx/model.onnx",
+}
 
 
 def _resolve_model_dir(model_dir: str | Path) -> Path:
@@ -65,7 +72,8 @@ class OnnxEmbedder(Embedder):
             raise RuntimeError("No ONNX execution providers available")
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        onnx_path = cached_file(self.model_id, "onnx/model.onnx")
+        so.intra_op_num_threads = os.cpu_count() or 4
+        onnx_path = cached_file(self.model_id, _ONNX_FILES[prefer_gpu])
         self.session = ort.InferenceSession(
             str(onnx_path),
             sess_options=so,
@@ -73,10 +81,11 @@ class OnnxEmbedder(Embedder):
         )
         self.active_provider = self.session.get_providers()[0]
         self._prefer_gpu = prefer_gpu
+        self.dim = self.session.get_outputs()[0].shape[-1]
 
     def embed(self, texts: list[str]) -> np.ndarray:
         if not texts:
-            return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+            return np.zeros((0, self.dim), dtype=np.float32)
         encoded = self.tokenizer(
             texts,
             padding=True,

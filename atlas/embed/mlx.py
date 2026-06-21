@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     import mlx.core as mx
 
 from .base import (
-    EMBEDDING_DIM,
     MAX_SEQ_LENGTH,
     Embedder,
     l2_normalize,
@@ -252,6 +251,7 @@ class MlxEmbedder(Embedder):
         self.resolved_dir = weights_path
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         self.model = BgeModel()
+        self.dim = 768
         _load_mlx_weights(self.model, weights_path)
         # Force a small eval to warm the ANE/GPU
         self._warmup_done = False
@@ -282,7 +282,7 @@ class MlxEmbedder(Embedder):
 
     def embed(self, texts: list[str]) -> np.ndarray:
         if not texts:
-            return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+            return np.zeros((0, self.dim), dtype=np.float32)
         mx, _ = _import_mlx()
         self._ensure_warmup()
         hidden = self._forward(texts)

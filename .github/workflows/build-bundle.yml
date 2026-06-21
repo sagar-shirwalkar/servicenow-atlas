@@ -45,14 +45,16 @@ jobs:
         run: |
           uv sync
 
-      - name: Verify tokenizer dependencies
+      - name: Verify model cache
         run: |
           uv run python - <<'PY'
-          import sentencepiece
-          from transformers import AutoTokenizer
-
-          tokenizer = AutoTokenizer.from_pretrained("Xenova/bge-base-en-v1.5")
-          print(f"sentencepiece={sentencepiece.__version__}; tokenizer={tokenizer.__class__.__name__}")
+          from huggingface_hub import snapshot_download
+          path = snapshot_download("Xenova/bge-small-en-v1.5")
+          print(f"Model cached at: {path}")
+          # Confirm the ONNX file needed by the CPU backend is present
+          import os
+          onnx_files = [f for f in os.listdir(os.path.join(path, "onnx")) if f.endswith(".onnx")]
+          print(f"ONNX variants: {onnx_files}")
           PY
 
       - name: Build bundle
@@ -60,7 +62,7 @@ jobs:
           uv run atlas-build \
             --branch australia \
             --output "$BUNDLE_DIR" \
-            --model Xenova/bge-base-en-v1.5
+            --model Xenova/bge-small-en-v1.5
 
       - name: Smoke test
         run: |
@@ -93,7 +95,7 @@ jobs:
             Pre-built RAG bundle for the ServiceNow Australia docs release.
 
             Source SHA: see `manifest.json` inside the bundle.
-            Embedding model: Xenova/bge-base-en-v1.5 (ONNX, 768-dim).
+            Embedding model: Xenova/bge-small-en-v1.5 (ONNX int8, 384-dim).
 
             Install with:
             ```

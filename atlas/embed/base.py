@@ -199,10 +199,11 @@ class Embedder(ABC):
     active_provider: str  # set by subclass
     model_id: str  # set by subclass
     resolved_dir: Path  # set by subclass
+    dim: int = EMBEDDING_DIM  # set by subclass; fallback to 768
 
     @abstractmethod
     def embed(self, texts: list[str]) -> np.ndarray:
-        """Embed a batch of texts. Returns shape ``(n, 768)`` float32,
+        """Embed a batch of texts. Returns shape ``(n, dim)`` float32,
         L2-normalized (unit vectors)."""
 
     def embed_with_progress(
@@ -219,7 +220,7 @@ class Embedder(ABC):
         """
         import time
         n = len(texts)
-        out = np.zeros((n, EMBEDDING_DIM), dtype=np.float32)
+        out = np.zeros((n, self.dim), dtype=np.float32)
         if n == 0:
             return out
 

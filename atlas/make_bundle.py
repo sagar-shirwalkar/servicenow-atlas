@@ -194,6 +194,7 @@ def write_manifest(
     source_sha: str,
     chunk_count: int,
     model_id: str,
+    embedding_dim: int = 768,
     embedding_backend: str = "",
     embedding_active_provider: str = "",
 ) -> Path:
@@ -206,7 +207,7 @@ def write_manifest(
         "built_at": datetime.now(timezone.utc).isoformat(),
         "chunk_count": chunk_count,
         "embedding_model": model_id,
-        "embedding_dim": 768,
+        "embedding_dim": embedding_dim,
         "artifacts": {
             "chunks": "chunks.parquet",
             "embeddings": "embeddings.f16.npy",
@@ -270,16 +271,19 @@ def _run() -> int:
     if args.skip_embed:
         print("  --skip-embed set; bundle contains chunks only")
         write_manifest(
-            args.output, args.repo_url, args.branch, sha, len(df), args.model
+            args.output, args.repo_url, args.branch, sha, len(df), args.model,
+            embedding_dim=768,
         )
         return 0
 
     backend, reason = resolve_backend(args.prefer)
+    batch_size = 256 if backend == "onnx-cpu" else 32
     print(f"  Embedding backend: {backend} ({reason})")
     print(f"  Loading model {args.model}...")
     embedder = get_embedder(args.model, prefer=args.prefer)
     print(f"  Active provider: {embedder.active_provider}")
-    embeddings = embedder.embed_with_progress(df["text"].tolist())
+    print(f"  Embedding dim: {embedder.dim}")
+    embeddings = embedder.embed_with_progress(df["text"].tolist(), batch_size=batch_size)
 
     emb_path, norms_path = save_bundle_artifacts(embeddings, args.output)
     print(f"  Wrote {emb_path}")
@@ -295,6 +299,7 @@ def _run() -> int:
         sha,
         len(df),
         args.model,
+        embedding_dim=embedder.dim,
         embedding_backend=backend,
         embedding_active_provider=str(embedder.active_provider),
     )
