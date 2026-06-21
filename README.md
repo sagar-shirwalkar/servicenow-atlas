@@ -15,10 +15,10 @@ distributed as a single download. End users never embed, never chunk,
 never run a vector database, never pull a model. They install two
 servers and get instant, citation-backed knowledge of ServiceNow.
 
-Current baseline RAG quality #11-validate-rag-quality based on `evaluate_rag.py`:
+Current baseline RAG quality based on `evaluate_rag.py` (see [§11](#11-validate-rag-quality)):
 
-> **Mean Precision@10**: 0.920 ± 0.098 \
->**Mean Reciprocal Rank**: 0.933 ± 0.200
+> **Mean Precision@10:** 0.920 ± 0.098 \
+>**Mean Reciprocal Rank:** 0.933 ± 0.200
 
 **Note on current version:**
 
