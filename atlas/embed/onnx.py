@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
+from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer
 from transformers.utils.hub import cached_file
 
@@ -29,19 +30,14 @@ def _resolve_model_dir(model_dir: str | Path) -> Path:
     """Resolve a model id or local path to a local directory.
 
     If ``model_dir`` is an existing directory, return it as-is. If
-    it is a Hugging Face model id, use ``cached_file`` to trigger
-    the download and resolve the path to the ONNX file's parent
-    directory (``<snapshot>/onnx/``).
+    it is a Hugging Face model id, download the full model snapshot
+    (ONNX model + tokenizer + config) and return the snapshot path.
     """
     p = Path(model_dir)
     if p.is_dir():
         return p
-    onnx = cached_file(model_dir, "onnx/model.onnx")
-    if onnx is None:
-        raise FileNotFoundError(
-            f"ONNX model not found in '{model_dir}' (file 'onnx/model.onnx' missing)"
-        )
-    return Path(onnx).parent.parent
+    path = snapshot_download(model_dir)
+    return Path(path)
 
 
 def _providers(prefer_gpu: bool) -> list[str]:

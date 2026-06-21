@@ -28,6 +28,7 @@ jobs:
     env:
       BUNDLE_DIR: data/rag-bundle
       BUNDLE_REPO: ${{ github.repository }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN_GH_RO }}
 
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +42,6 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN_GH_RO }}
         run: |
           uv sync
 
