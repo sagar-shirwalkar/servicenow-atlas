@@ -7,6 +7,13 @@ source SHA so re-runs are reproducible. Prints the chosen embedding
 backend and the reason for the choice. Accepts
 `--prefer {auto,apple,nvidia,cpu}`.
 
+When the backend is ONNX+CPU (the CI path), the embedding step is
+automatically parallelized across all available CPU cores. Each
+worker loads its own ONNX session and processes a shard of the
+chunks. This is transparent to the caller — ``_run()`` calls
+:func:`embed_chunks` which dispatches to the parallel or sequential
+path based on the backend.
+
 Pipeline:
   1. ``git fetch`` the pinned ServiceNowDocs branch (default:
      ``australia``) into ``--repo-path``.
@@ -29,8 +36,11 @@ no torch required at runtime.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
+import math
+import os
 import shutil
 import subprocess
 import sys
@@ -53,6 +63,55 @@ DEFAULT_REPO_URL = "https://github.com/ServiceNow/ServiceNowDocs.git"
 DEFAULT_LOCAL_PATH = "./data/servicenow-docs/ServiceNowDocs-australia"
 
 BUNDLE_SCHEMA_VERSION = 1
+
+
+def _embed_shard(model_id: str, prefer: str, texts: list[str], batch_size: int) -> np.ndarray:
+    """Embed a shard of texts in a worker process.
+
+    Each worker loads its own ONNX session from the same cached model
+    files. Called by :func:`embed_chunks` via ``ProcessPoolExecutor``.
+    """
+    embedder = get_embedder(model_id, prefer=prefer)
+    return embedder.embed_with_progress(texts, batch_size=batch_size, show_progress=False)
+
+
+def embed_chunks(texts: list[str], model_id: str, prefer: str, backend: str, batch_size: int) -> np.ndarray:
+    """Embed all chunks, parallelizing ONNX+CPU across CPU cores.
+
+    Sequential backends (MLX, CUDA) run as-is. ONNX+CPU splits the
+    texts into ``os.cpu_count()`` shards and embeds each in a
+    separate process, concatenating the results.
+    """
+    if backend != "onnx-cpu":
+        embedder = get_embedder(model_id, prefer=prefer)
+        return embedder.embed_with_progress(texts, batch_size=batch_size)
+
+    n_workers = min(os.cpu_count() or 2, 4)
+    print(f"  Parallel embedding across {n_workers} CPU worker(s)")
+    n = len(texts)
+    if n_workers <= 1 or n < n_workers * batch_size:
+        embedder = get_embedder(model_id, prefer=prefer)
+        return embedder.embed_with_progress(texts, batch_size=batch_size)
+
+    shard_size = math.ceil(n / n_workers)
+    shards = [texts[i * shard_size : (i + 1) * shard_size] for i in range(n_workers)]
+    shards = [s for s in shards if s]
+
+    results: list[np.ndarray] = [None] * len(shards)  # type: ignore[list-item]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=len(shards)) as pool:
+        futs = {
+            pool.submit(_embed_shard, model_id, prefer, s, batch_size): i
+            for i, s in enumerate(shards)
+        }
+        for future in concurrent.futures.as_completed(futs):
+            idx = futs[future]
+            results[idx] = future.result()
+            done = sum(1 for r in results if r is not None)
+            print(f"  Shard {done}/{len(shards)} complete")
+
+    if any(r is None for r in results):
+        raise RuntimeError(f"Parallel embedding failed for {sum(1 for r in results if r is None)} shard(s)")
+    return np.vstack(results)
 
 
 def _git_retry(cmd: list[str], max_attempts: int = 3) -> None:
@@ -306,7 +365,13 @@ def _run() -> int:
     embedder = get_embedder(args.model, prefer=args.prefer)
     print(f"  Active provider: {embedder.active_provider}")
     print(f"  Embedding dim: {embedder.dim}")
-    embeddings = embedder.embed_with_progress(df["text"].tolist(), batch_size=batch_size)
+    embeddings = embed_chunks(
+        df["text"].tolist(),
+        args.model,
+        args.prefer,
+        backend,
+        batch_size,
+    )
 
     emb_path, norms_path = save_bundle_artifacts(embeddings, args.output)
     print(f"  Wrote {emb_path}")

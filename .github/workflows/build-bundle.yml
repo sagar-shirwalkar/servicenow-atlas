@@ -1,7 +1,13 @@
-# Monthly cron + manual dispatch + push-to-main. Runs `atlas-build`
-# on a Linux runner, smoke-tests, and publishes a new GitHub Release
-# with the bundle tarball. The release tag is `australia-YYYYMMDD`
-# so users can pin to a specific ServiceNow release family.
+# Monthly cron + manual dispatch + push-to-main. Clones the
+# ServiceNowDocs repo, builds a RAG bundle with atlass-build,
+# smoke-tests, and publishes a new GitHub Release with the bundle
+# tarball. The release tag is australia-YYYYMMDD so users can pin
+# to a specific ServiceNow release family.
+#
+# The embedding step is automatically parallelized across all CPU
+# cores (see atlas/make_bundle.py embed_chunks()). We use a 4-core
+# runner so 4 parallel ONNX workers finish the 135k-chunk embedding
+# in ~45 minutes, well within the 90-minute timeout.
 
 name: build-bundle
 
@@ -21,14 +27,15 @@ on:
       - "pyproject.toml"
       - ".github/workflows/build-bundle.yml"
 
+env:
+  DOCS_DIR: data/servicenow-docs/ServiceNowDocs-australia
+  BUNDLE_DIR: data/rag-bundle
+  BUNDLE_REPO: ${{ github.repository }}
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-4-cores
     timeout-minutes: 90
-    env:
-      BUNDLE_DIR: data/rag-bundle
-      BUNDLE_REPO: ${{ github.repository }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN_GH_RO }}
 
     steps:
       - uses: actions/checkout@v4
@@ -42,8 +49,13 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
+        run: uv sync
+
+      - name: Clone ServiceNow docs
         run: |
-          uv sync
+          git clone --depth 1 -b australia \
+            https://github.com/ServiceNow/ServiceNowDocs.git \
+            "$DOCS_DIR"
 
       - name: Verify model cache
         run: |
@@ -51,7 +63,6 @@ jobs:
           from huggingface_hub import snapshot_download
           path = snapshot_download("Xenova/bge-small-en-v1.5")
           print(f"Model cached at: {path}")
-          # Confirm the ONNX file needed by the CPU backend is present
           import os
           onnx_files = [f for f in os.listdir(os.path.join(path, "onnx")) if f.endswith(".onnx")]
           print(f"ONNX variants: {onnx_files}")
@@ -60,15 +71,13 @@ jobs:
       - name: Build bundle
         run: |
           uv run atlas-build \
+            --repo-path "$DOCS_DIR" \
             --branch australia \
             --output "$BUNDLE_DIR" \
             --model Xenova/bge-small-en-v1.5
 
       - name: Smoke test
         run: |
-          git clone --depth 1 -b australia \
-            https://github.com/ServiceNow/ServiceNowDocs.git \
-            data/servicenow-docs/ServiceNowDocs-australia
           uv run atlas-smoke
 
       - name: Compress bundle
