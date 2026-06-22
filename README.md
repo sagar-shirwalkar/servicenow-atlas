@@ -10,8 +10,8 @@ citations, and a portable RAG for semantic search. Runs entirely on
 Apple Silicon. No cloud APIs, no model training, no data leaving your
 machine.
 
-The RAG bundle is [built once](#10-development) by the maintainer (or by CI), then
-distributed as a single download. End users never embed, never chunk,
+The RAG bundle is [built once](#10-development) by the maintainer locally, then
+distributed as a single download via `scripts/publish-bundle.sh`. End users never embed, never chunk,
 never run a vector database, never pull a model. They install two
 servers and get instant, citation-backed knowledge of ServiceNow.
 
@@ -43,17 +43,12 @@ Current baseline RAG quality based on `atlas-evaluate` (see [§11](#11-validate-
 
 **Note on builds:**
 
-> **CI bundles vs local builds.** Bundles published via GitHub Actions
-> ([§5.2](#52-ci-release)) are built on CPU-only Linux runners. To finish within the
-> 90-minute timeout, CI uses `Xenova/bge-small-en-v1.5` (int8
-> quantized, 384-dim) — roughly 5× smaller than the default
-> `Xenova/bge-base-en-v1.5` (FP32, 768-dim) you get from a local build
-> with MLX on Apple Silicon. The CI bundle has slightly lower retrieval
-> quality, estimated at ~2-3 percentage points on Precision@10/MRR (see
-> [§11](#11-validate-rag-quality) for measurements). Local builds are
-> unaffected. MLX still loads the full-precision BGE-base. \
-> Currently, full local builds are recommended as GitHub terminates runners
-> arbitrarily. Follow [§10](#10-development) .
+> **Bundles are built locally, not in CI.** Embedding 135k chunks on a
+> GitHub Actions runner is impractical. Instead, the maintainer builds
+> the bundle on their own machine (~15 min with MLX on Apple Silicon)
+> and publishes it via `scripts/publish-bundle.sh`. CI only runs smoke
+> tests ([§5.3](#53-smoke-test-ci)) to catch regressions. Full build
+> instructions at [§5.0](#50-first-time-build-walkthrough).
 
 ---
 
@@ -126,55 +121,55 @@ all consume the same MCP servers and get the same knowledge.
 
 ```
 servicenow-atlas/
-├── README.md                               This file
-├── pyproject.toml                           uv-managed deps, console-script entry points
+├── README.md                                 This file
+├── pyproject.toml                             uv-managed deps, console-script entry points
 ├── .gitignore
 ├── .python-version
 ├── LICENSE
 │
-├── atlas/                                              Python package (importable as `atlas`)
-│   ├── __init__.py                            Version + package docstring
+├── atlas/                                     Python package (importable as `atlas`)
+│   ├── __init__.py                             Version + package docstring
 │   ├── chunk.py                                H2-boundary chunker + frontmatter parser
-│   ├── embed/                                   Embedding backends (factory pattern)
-│   │   ├── base.py                            ABC, factory, resolve_backend, mean_pool, l2_normalize
-│   │   ├── onnx.py                            OnnxEmbedder (portable, ONNX+CPU)
+│   ├── embed/                                  Embedding backends (factory pattern)
+│   │   ├── base.py                             ABC, factory, resolve_backend, mean_pool, l2_normalize
+│   │   ├── onnx.py                             OnnxEmbedder (portable, ONNX+CPU)
 │   │   └── mlx.py                              MlxEmbedder + hand-rolled BGE (Apple Silicon)
-│   ├── fs_server.py                           Filesystem MCP server
-│   ├── rag_server.py                        RAG MCP server (auto-selects backend)
-│   ├── make_bundle.py                  Build orchestrator (auto-selects backend)
-│   ├── download.py                         Download + verify bundle from Releases
-│   ├── backup.py                              Snapshot the current bundle
+│   ├── fs_server.py                            Filesystem MCP server
+│   ├── rag_server.py                           RAG MCP server (auto-selects backend)
+│   ├── make_bundle.py                          Build orchestrator (auto-selects backend)
+│   ├── download.py                             Download + verify bundle from Releases
+│   ├── backup.py                               Snapshot the current bundle
 │   ├── restore.py                              Roll back to a previous snapshot
-│   ├── smoke_test.py                      1-2 min end-to-end validation
-│   ├── doctor.py                                Diagnose installation + probe all backends
-│   ├── evaluate.py                              RAG quality evaluation (Precision@10, MRR)
+│   ├── smoke_test.py                           1-2 min end-to-end validation
+│   ├── doctor.py                               Diagnose installation + probe all backends
+│   ├── evaluate.py                             RAG quality evaluation (Precision@10, MRR)
 │   ├── log.py                                  Structured logging via structlog
-│   ├── rerank.py                              Cross-encoder re-ranker (MiniLM-L6-v2 ONNX)
-│   ├── agent.py                                  [planned] Reasoning agent over the MCP servers
-│   └── training.py                              [planned] Fine-tuning pipeline
+│   ├── rerank.py                               Cross-encoder re-ranker (MiniLM-L6-v2 ONNX)
+│   ├── agent.py                                [planned] Reasoning agent over the MCP servers
+│   └── training.py                             [planned] Fine-tuning pipeline
 │
 ├── tools/
-│   └── convert_bge_to_mlx.py      One-time HF→MLX weight conversion (maintainers)
+│   └── convert_bge_to_mlx.py                   One-time HF→MLX weight conversion (maintainers)
 │
 ├── scripts/
-│   └── publish-bundle.sh             Local build + gh release create (maintainers)
+│   └── publish-bundle.sh                       Local build + gh release create (maintainers)
 │
-├── data/                                                Runtime data (gitignored, see .gitignore)
-│   ├── .gitkeep                                    Keeps the directory in git
-│   ├── servicenow-docs/                 Local clone of the docs (gitignored)
+├── data/                                       Runtime data (gitignored, see .gitignore)
+│   ├── .gitkeep                                Keeps the directory in git
+│   ├── servicenow-docs/                        Local clone of the docs (gitignored)
 │   │   └── ServiceNowDocs-australia/
-│   └── rag-bundle/                            Pre-built RAG bundle (gitignored)
+│   └── rag-bundle/                             Pre-built RAG bundle (gitignored)
 │
 ├── tests/
 │   ├── test_chunk.py                           Chunker + frontmatter parse tests
-│   ├── test_download.py                    Download + verify tests
-│   ├── test_embed.py                          Embedding backend tests (all 3)
-│   ├── test_fs_server.py                    Filesystem MCP server tests
-│   ├── test_make_bundle.py             Bundle build + verify tests
-│   └── test_rag_server.py                RAG MCP server integration tests
+│   ├── test_download.py                        Download + verify tests
+│   ├── test_embed.py                           Embedding backend tests (all 3)
+│   ├── test_fs_server.py                       Filesystem MCP server tests
+│   ├── test_make_bundle.py                     Bundle build + verify tests
+│   └── test_rag_server.py                      RAG MCP server integration tests
 │
 └── .github/workflows/
-    └── build-bundle.yml                     Smoke tests + release automation
+    └── build-bundle.yml                        Smoke tests + release automation
 ```
 
 ---
@@ -977,14 +972,8 @@ top-10 by re-scoring with a joint query-passage model. Enable with
 Reranking the top-100 candidates adds ~5 ms per query on MLX or
 ~40 ms on CPU.
 
-**CI-bundled releases** (§5.2) use `Xenova/bge-small-en-v1.5` (int8,
-384-dim) to fit within the 90-minute GitHub Actions timeout. Expected:
-- Mean Precision@10: ~0.89–0.90
-- Mean Reciprocal Rank: ~0.91–0.92
-
-The top-3 results are stable across both models — differences appear
-mainly in the tail of the top-10. For agent workflows (retrieve → LLM
-judges relevance), the practical impact is minimal.
+All published bundles are built locally with the default BGE-base model
+— see §5.2. No CI-compromised quality trade-off applies.
 
 ---
 
