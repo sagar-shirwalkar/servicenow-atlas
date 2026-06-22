@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import structlog
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -60,7 +61,7 @@ class Bundle:
         chunks_path = self.bundle_dir / "chunks.parquet"
         if not chunks_path.is_file():
             raise FileNotFoundError(f"Bundle chunks missing: {chunks_path}")
-        self.chunks = pd.read_parquet(chunks_path)
+        table = pq.read_table(chunks_path)
         self.embeddings = load_embeddings(self.bundle_dir)
         norms_path = self.bundle_dir / "norms.f32.npy"
         if norms_path.is_file():
@@ -83,11 +84,27 @@ class Bundle:
             self.embedder = get_embedder(DEFAULT_MODEL_ID, prefer="cpu")
         self._norms_safe = self.norms.clip(min=1e-9)
 
+        self._n = len(table)
+        self._pub = table.column("publication").to_numpy(zero_copy_only=False)
+        self._area = table.column("product_area").to_numpy(zero_copy_only=False)
+        self._code = table.column("is_code").to_numpy().astype(bool)
+        self._texts = table.column("text").to_pylist()
+        self._titles_pa = table.column("title")
+        ids = table.column("id").to_pylist()
+        self._id_to_idx = {cid: i for i, cid in enumerate(ids)}
+        self._chunk_ids = ids
+        self._files = table.column("file").to_pylist()
+        self._headings = table.column("heading").to_pylist()
+        self._product_areas = table.column("product_area").to_pylist()
+        self._last_updated = table.column("last_updated").to_pylist()
+        self._canonical_urls = table.column("canonical_url").to_pylist()
+
     @staticmethod
-    def _title_boost(titles: pd.Series, query_tokens: set[str]) -> np.ndarray:
+    def _title_boost(titles: list[str], query_tokens: set[str]) -> np.ndarray:
         boost = np.zeros(len(titles), dtype=np.float32)
         for t in query_tokens:
-            boost += titles.str.contains(t, na=False, regex=False).values.astype(np.float32)
+            matches = pc.match_substring(titles, t)
+            boost += matches.cast("float32").to_numpy()
         return boost * 0.05
 
     def search(
@@ -104,16 +121,16 @@ class Bundle:
         q = self.embedder.embed([query])[0]
         vec_scores = (self.embeddings @ q).flatten() / self._norms_safe
         query_tokens = set(query.lower().split())
-        tb = self._title_boost(self.chunks["title"], query_tokens) if query_tokens else 0.0
+        tb = self._title_boost(self._titles_pa, query_tokens) if query_tokens else 0.0
         boosted = vec_scores + tb
 
-        mask = np.ones(len(self.chunks), dtype=bool)
+        mask = np.ones(self._n, dtype=bool)
         if publication:
-            mask &= self.chunks["publication"].values == publication
+            mask &= self._pub == publication
         if product_area:
-            mask &= self.chunks["product_area"].values == product_area
+            mask &= self._area == product_area
         if is_code is not None:
-            mask &= self.chunks["is_code"].values == bool(is_code)
+            mask &= self._code == bool(is_code)
 
         if mode == "vector":
             if candidate_k is not None:
@@ -142,7 +159,7 @@ class Bundle:
             return self._collect(min_score, boosted[pool_idx], boosted[pool_idx], top_k)
 
         kw_raw = np.array(
-            [sum(t in self.chunks.iloc[i]["text"].lower() for t in query_tokens) for i in pool_idx],
+            [sum(t in self._texts[i].lower() for t in query_tokens) for i in pool_idx],
             dtype=np.float32,
         )
 
@@ -176,40 +193,38 @@ class Bundle:
             if score < min_score:
                 continue
             i = idx_map[rank] if idx_map is not None else rank
-            row = self.chunks.iloc[i]
             results.append(
                 {
-                    "id": row["id"],
+                    "id": self._chunk_ids[i],
                     "score": score,
-                    "publication": row["publication"],
-                    "file": row["file"],
-                    "heading": row["heading"],
-                    "title": row["title"],
-                    "product_area": row["product_area"],
-                    "last_updated": row["last_updated"],
-                    "canonical_url": row["canonical_url"],
-                    "is_code": bool(row["is_code"]),
-                    "text": row["text"],
+                    "publication": self._pub[i],
+                    "file": self._files[i],
+                    "heading": self._headings[i],
+                    "title": self._titles_pa[i].as_py(),
+                    "product_area": self._product_areas[i],
+                    "last_updated": self._last_updated[i],
+                    "canonical_url": self._canonical_urls[i],
+                    "is_code": bool(self._code[i]),
+                    "text": self._texts[i],
                 }
             )
         return results
 
     def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
-        match = self.chunks[self.chunks["id"] == chunk_id]
-        if match.empty:
+        i = self._id_to_idx.get(chunk_id)
+        if i is None:
             return None
-        row = match.iloc[0]
         return {
-            "id": row["id"],
-            "publication": row["publication"],
-            "file": row["file"],
-            "heading": row["heading"],
-            "title": row["title"],
-            "product_area": row["product_area"],
-            "last_updated": row["last_updated"],
-            "canonical_url": row["canonical_url"],
-            "is_code": bool(row["is_code"]),
-            "text": row["text"],
+            "id": self._chunk_ids[i],
+            "publication": self._pub[i],
+            "file": self._files[i],
+            "heading": self._headings[i],
+            "title": self._titles_pa[i].as_py(),
+            "product_area": self._product_areas[i],
+            "last_updated": self._last_updated[i],
+            "canonical_url": self._canonical_urls[i],
+            "is_code": bool(self._code[i]),
+            "text": self._texts[i],
         }
 
 

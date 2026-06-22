@@ -35,7 +35,7 @@ def evaluate(
 
     print("Loading RAG bundle...")
     bundle = Bundle(bundle_dir, prefer=prefer)
-    print(f"Bundle loaded with {len(bundle.chunks)} chunks.")
+    print(f"Bundle loaded with {bundle._n} chunks.")
 
     queries = queries or QUERIES
     precisions: list[float] = []

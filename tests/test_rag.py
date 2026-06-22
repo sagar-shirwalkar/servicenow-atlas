@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from atlas.rag_server import Bundle
@@ -14,7 +15,7 @@ from atlas.rag_server import Bundle
 @pytest.fixture
 def fake_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bundle:
     DIM = 4
-    chunks = pd.DataFrame(
+    table = pa.table(
         {
             "id": ["c1", "c2", "c3"],
             "text": [
@@ -46,7 +47,7 @@ def fake_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bundle:
 
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
-    chunks.to_parquet(bundle_dir / "chunks.parquet")
+    pq.write_table(table, bundle_dir / "chunks.parquet")
     np.save(bundle_dir / "embeddings.f32.npy", embeddings)
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest))
 
@@ -111,7 +112,6 @@ def test_search_empty_query_vector(fake_bundle: Bundle) -> None:
 
 
 def test_search_mode_parameter_defaults_to_vector(fake_bundle: Bundle) -> None:
-    # Verify mode defaults don't cause issues; smoke test for backward compat
     vec = fake_bundle.search("incident", top_k=5, mode="vector")
     hybrid = fake_bundle.search("incident", top_k=5, mode="hybrid")
     kw = fake_bundle.search("incident", top_k=5, mode="keyword")
