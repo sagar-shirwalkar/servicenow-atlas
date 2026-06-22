@@ -34,7 +34,7 @@ Current baseline RAG quality based on `evaluate_rag.py` (see [§11](#11-validate
 **Note on builds:**
 
 > **CI bundles vs local builds.** Bundles published via GitHub Actions
-> (§5.2) are built on CPU-only Linux runners. To finish within the
+> ([§5.2](#52-ci-release)) are built on CPU-only Linux runners. To finish within the
 > 90-minute timeout, CI uses `Xenova/bge-small-en-v1.5` (int8
 > quantized, 384-dim) — roughly 5× smaller than the default
 > `Xenova/bge-base-en-v1.5` (FP32, 768-dim) you get from a local build
@@ -117,7 +117,7 @@ all consume the same MCP servers and get the same knowledge.
 servicenow-atlas/
 ├── README.md                               This file
 ├── pyproject.toml                           uv-managed deps, console-script entry points
- ├── README.md                              Evaluate RAG quality by checking if results contain the query string.
+├── README.md                              Evaluate RAG quality by checking if results contain the query string.
 ├── .gitignore
 ├── .python-version
 ├── LICENSE
