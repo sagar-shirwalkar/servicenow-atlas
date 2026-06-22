@@ -525,7 +525,11 @@ model id, and SHA256 of each artifact.
 3. Push to `main` when source files change.
 
 On each run it builds with `Xenova/bge-small-en-v1.5` (int8, 384-dim)
-for speed, smoke-tests, and publishes a release named
+on a 4-core runner (`ubuntu-latest-4-cores`). The ONNX+CPU embedding
+step is automatically parallelized across all cores via
+`ProcessPoolExecutor` (see `atlas/make_bundle.py` `embed_chunks()`),
+cutting the 135k-chunk embedding from ~4.5 h to ~45 min. After
+building it smoke-tests and publishes a release named
 `australia-YYYYMMDD` with the bundle tarball as the sole asset.
 
 To cut a release with a custom tag:
@@ -815,12 +819,18 @@ back to the ONNX+CPU floor. It will work, just slower.
 3. Use `atlas-fs` to grep for exact terms.
 4. Drop `min_score` to 0.0 to see all candidates.
 
-### Build OOMs on Linux CI
+### Build OOMs or times out on Linux CI
 
-The default GitHub Actions runner has 7 GB. The build peaks around
-4-5 GB. If you fork the workflow on a smaller runner, add
-`runs-on: ubuntu-latest-4-cores` with 16 GB or set up swap. Apple
-Silicon builds have plenty of unified memory and rarely hit this.
+The default GitHub Actions runner has 7 GB RAM and 2 vCPUs. The
+build peaks around 4-5 GB, but the embedding step takes ~4.5 hours
+on 2 cores — far past the 90-minute workflow timeout.
+
+The shipped workflow uses `ubuntu-latest-4-cores` (16 GB, 4 vCPUs)
+and the parallel ONNX+CPU embedding code to finish within 90
+minutes. If you fork the workflow onto a smaller runner, upgrade
+to at least 4 cores or expect the build to time out.
+
+Apple Silicon builds are unaffected (MLX is fast enough).
 
 ### Console scripts not found after `uv sync`
 
