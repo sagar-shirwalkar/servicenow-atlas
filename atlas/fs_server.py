@@ -272,7 +272,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _start = time.perf_counter()
     logger.info("Tool called", tool=name)
 
-    root = _repo_root(ARGS.repo)
+    root = _repo_root(_get_args().repo)
     try:
         if name == "list_publications":
             return _result(list_publications(root))
@@ -318,7 +318,14 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-ARGS = parse_args()
+_ARGS: argparse.Namespace | None = None
+
+
+def _get_args() -> argparse.Namespace:
+    global _ARGS
+    if _ARGS is None:
+        _ARGS = parse_args()
+    return _ARGS
 
 
 async def serve() -> None:

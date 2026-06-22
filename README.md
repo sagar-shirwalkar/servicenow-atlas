@@ -15,7 +15,7 @@ distributed as a single download. End users never embed, never chunk,
 never run a vector database, never pull a model. They install two
 servers and get instant, citation-backed knowledge of ServiceNow.
 
-Current baseline RAG quality based on `evaluate_rag.py` (see [§11](#11-validate-rag-quality)):
+Current baseline RAG quality based on `atlas-evaluate` (see [§11](#11-validate-rag-quality)):
 
 > **Mean Precision@10:** 0.920 ± 0.140 \
 > **Mean Reciprocal Rank:** 1.000 ± 0.000
@@ -29,16 +29,17 @@ Current baseline RAG quality based on `evaluate_rag.py` (see [§11](#11-validate
 
 **Note on current version:**
 
-> **v0.3 (current) — layered embedding backend + cross-encoder
-> re-ranker + title boost.** The RAG server now picks the best inference
-> runtime for the host: Apple MLX on M-series (1-2 ms/query, no ONNX
-> bridge), ONNX Runtime + CUDA on NVIDIA Linux boxes, ONNX Runtime + CPU
-> everywhere else. An optional cross-encoder re-ranker (MiniLM-L6-v2,
-> ONNX) eliminates false positives via `--rerank`. A lightweight title
-> boost (+0.05 per query token matching the document title) improves
-> candidate ranking in all modes. The bundle itself is backend-agnostic
-> — only the inference runtime differs. Use `atlas-doctor` to see which
-> backend will be chosen and why.
+> **v0.4 (current) — hybrid search, cross-encoder re-ranker, title boost.**
+> The RAG server now picks the best inference runtime for the host:
+> Apple MLX on M-series (1-2 ms/query), ONNX Runtime + CUDA on NVIDIA
+> Linux boxes, ONNX Runtime + CPU everywhere else. New in v0.4: hybrid
+> search (BM25 + vector), an optional cross-encoder re-ranker
+> (MiniLM-L6-v2, ONNX) that eliminates false positives, and a title boost
+> (+0.05 per query token matching the document title) that improves
+> candidate ranking across all modes. A full pytest test suite, structured
+> logging via structlog, and a standalone evaluation script round out the
+> release. The bundle itself remains backend-agnostic — only the inference
+> runtime differs. Use `atlas-doctor` to see which backend is active.
 
 **Note on builds:**
 
@@ -146,14 +147,14 @@ servicenow-atlas/
 │   ├── restore.py                              Roll back to a previous snapshot
 │   ├── smoke_test.py                      1-2 min end-to-end validation
 │   ├── doctor.py                                Diagnose installation + probe all backends
+│   ├── evaluate.py                              RAG quality evaluation (Precision@10, MRR)
 │   ├── log.py                                  Structured logging via structlog
 │   ├── rerank.py                              Cross-encoder re-ranker (MiniLM-L6-v2 ONNX)
 │   ├── agent.py                                  [planned] Reasoning agent over the MCP servers
 │   └── training.py                              [planned] Fine-tuning pipeline
 │
 ├── tools/
-│   ├── convert_bge_to_mlx.py      One-time HF→MLX weight conversion (maintainers)
-│   └── evaluate_rag.py              Evaluate RAG quality by checking if results contain the query string.
+│   └── convert_bge_to_mlx.py      One-time HF→MLX weight conversion (maintainers)
 │
 ├── data/                                                Runtime data (gitignored, see .gitignore)
 │   ├── .gitkeep                                    Keeps the directory in git
@@ -195,7 +196,7 @@ servicenow-atlas/
 >   floor; they run, just slower.
 > - **Linux x86_64 with an NVIDIA GPU.** Default backend is ONNX
 >   Runtime + CUDA. ~1-2 ms per query. Install with
->   `uv sync --extra gpu`. v0.3 added this path; pre-v0.3
+>   `uv sync --extra gpu`. v0.4 added this path; pre-v0.4
 >   explicitly skipped CUDA, which is why older notes say
 >   "no NVIDIA."
 > - **Anything else** (Linux/Windows without a GPU, Intel Mac, etc.)
@@ -910,83 +911,19 @@ docstring. Run `atlas-smoke` after changes.
 ## 11. Validate RAG quality
 
 To evaluate the quality of the RAG system beyond the basic smoke
-test, run a comprehensive evaluation that measures precision and
-reciprocal rank:
+test, run the dedicated evaluation tool:
 
 ```bash
-.venv/bin/python -c "
-import sys
-import os
-import numpy as np
-from pathlib import Path
-
-sys.path.insert(0, os.getcwd())
-
-from atlas.rag_server import Bundle
-from atlas.fs_server import read_publication_file, _repo_root
-
-def evaluate():
-    bundle_dir = Path('./data/rag-bundle')
-    docs_root = Path('./data/servicenow-docs/ServiceNowDocs-australia')
-
-    print('Loading RAG bundle...')
-    bundle = Bundle(bundle_dir, prefer='mlx')
-    print(f'Bundle loaded with {len(bundle.chunks)} chunks.')
-
-    queries = [
-        'incident management', 'change request',
-        'problem management', 'configuration item',
-        'service catalog', 'knowledge base',
-        'SLA', 'workflow', 'approval', 'notification',
-    ]
-
-    k = 10
-    precisions = []
-    reciprocal_ranks = []
-
-    for query in queries:
-        rag_results = bundle.search(query, top_k=k)
-        relevant_flags = []
-        for i, result in enumerate(rag_results):
-            pub = result['publication']
-            file_path = result['file']
-            try:
-                file_info = read_publication_file(
-                    _repo_root(str(docs_root)), pub, file_path, max_chars=10000
-                )
-                is_relevant = query.lower() in file_info['content'].lower()
-                relevant_flags.append(is_relevant)
-                tag = 'RELEVANT' if is_relevant else 'irrelevant'
-                print(f'  Rank {i+1}: {tag} - {pub}/{file_path}')
-            except Exception as e:
-                print(f'  Rank {i+1}: ERROR - {e}')
-                relevant_flags.append(False)
-
-        num_rel = sum(relevant_flags)
-        precisions.append(num_rel / k)
-        print(f'  Precision@{k}: {num_rel}/{k}')
-
-        rr = 0.0
-        for i, rel in enumerate(relevant_flags):
-            if rel:
-                rr = 1.0 / (i + 1)
-                break
-        reciprocal_ranks.append(rr)
-        print(f'  Reciprocal rank: {rr:.3f}')
-
-    print()
-    print('=' * 50)
-    print('EVALUATION SUMMARY')
-    print('=' * 50)
-    print(f'Mean Precision@{k}: {np.mean(precisions):.3f} +/- {np.std(precisions):.3f}')
-    print(f'Mean Reciprocal Rank: {np.mean(reciprocal_ranks):.3f} +/- {np.std(reciprocal_ranks):.3f}')
-
-if __name__ == '__main__':
-    evaluate()
-"
+uv run atlas-evaluate
 ```
 
-This measures **Precision@10** (fraction of top-10 results containing the query string) and **Mean Reciprocal Rank** (1/rank of first relevant result).
+This measures **Precision@10** (fraction of top-10 results containing the query string) and **Mean Reciprocal Rank** (1/rank of first relevant result). Pass `--help` for options (backend preference, top-k, custom paths):
+
+```bash
+uv run atlas-evaluate --prefer apple --top-k 20
+```
+
+The source is at `atlas/evaluate.py`.
 
 Baseline with `Xenova/bge-base-en-v1.5` (FP32, ONNX+CPU):
 - Mean Precision@10: 0.920 ± 0.098
@@ -1004,7 +941,7 @@ ONNX, applied over top-100):
 
 The re-ranker effectively eliminates false positives from the semantic
 top-10 by re-scoring with a joint query-passage model. Enable with
-`--rerank` on `atlas-rag` or the bundled `tools/evaluate_rag.py` script.
+`--rerank` on `atlas-rag` or the bundled `atlas-evaluate` tool.
 Reranking the top-100 candidates adds ~5 ms per query on MLX or
 ~40 ms on CPU.
 

@@ -1,6 +1,6 @@
 [project]
 name = "servicenow-atlas"
-version = "0.3.0"
+version = "0.4.0"
 description = "ServiceNow Atlas — local-first AI knowledge layer for ServiceNow development via MCP."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,7 @@ atlas-backup = "atlas.backup:main"
 atlas-restore = "atlas.restore:main"
 atlas-smoke = "atlas.smoke_test:main"
 atlas-doctor = "atlas.doctor:main"
+atlas-evaluate = "atlas.evaluate:main"
 
 [build-system]
 requires = ["hatchling"]

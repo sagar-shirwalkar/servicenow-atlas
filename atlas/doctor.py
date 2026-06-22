@@ -204,7 +204,7 @@ def run_diagnosis(bundle: Path | None = None, force: bool = False) -> dict[str, 
 
     backend, reason = resolve_backend("auto")
     report = {
-        "version": "0.3.0",
+        "version": "0.4.0",
         "platform": plat,
         "onnxruntime": onnx,
         "mlx": mlx,
