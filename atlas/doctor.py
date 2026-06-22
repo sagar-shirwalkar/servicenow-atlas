@@ -53,6 +53,7 @@ def _probe_platform() -> dict[str, Any]:
 def _probe_onnxruntime() -> dict[str, Any]:
     try:
         import onnxruntime
+
         return {
             "available": True,
             "version": getattr(onnxruntime, "__version__", "unknown"),
@@ -65,6 +66,7 @@ def _probe_onnxruntime() -> dict[str, Any]:
 def _probe_mlx() -> dict[str, Any]:
     try:
         import mlx.core as mx
+
         # try a tiny op
         a = mx.array([1.0, 2.0, 3.0])
         b = mx.array([4.0, 5.0, 6.0])
@@ -83,6 +85,7 @@ def _probe_mlx() -> dict[str, Any]:
 
 def _probe_mlx_weights() -> dict[str, Any]:
     from atlas.embed.mlx import DEFAULT_MLX_CACHE
+
     if not DEFAULT_MLX_CACHE.is_dir():
         return {"cached": False, "path": str(DEFAULT_MLX_CACHE)}
     n_files = sum(1 for _ in DEFAULT_MLX_CACHE.glob("*.npy"))
@@ -105,7 +108,7 @@ def _probe_nvidia() -> dict[str, Any]:
         )
         if out.returncode != 0:
             return {"available": False, "reason": out.stderr.strip() or "nvidia-smi failed"}
-        lines = [l for l in out.stdout.splitlines() if l.strip()]
+        lines = [line for line in out.stdout.splitlines() if line.strip()]
         return {"available": True, "devices": lines}
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"available": False, "reason": str(e)}
@@ -142,6 +145,7 @@ def _probe_bundle(bundle_dir: Path | None) -> dict[str, Any]:
         # SHA check
         try:
             import hashlib
+
             h = hashlib.sha256()
             with chunks.open("rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -171,8 +175,8 @@ def _probe_disk_free() -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(Path.home())
         return {
-            "free_gb": round(usage.free / (1024 ** 3), 1),
-            "total_gb": round(usage.total / (1024 ** 3), 1),
+            "free_gb": round(usage.free / (1024**3), 1),
+            "total_gb": round(usage.total / (1024**3), 1),
         }
     except OSError as e:
         return {"error": str(e)}
@@ -235,7 +239,7 @@ def print_report(report: dict[str, Any]) -> None:
     if onnx.get("available"):
         print(f"  ONNX Runtime   : {onnx['version']}  providers: {onnx['providers']}")
     else:
-        print(f"  ONNX Runtime   : NOT INSTALLED")
+        print("  ONNX Runtime   : NOT INSTALLED")
 
     print()
     print("  Backend probe:")
@@ -247,7 +251,7 @@ def print_report(report: dict[str, Any]) -> None:
         cached = "weights cached" if mlx_w.get("cached") else "weights NOT cached (run tools/convert_bge_to_mlx.py)"
         print(f"    Apple MLX      OK   {cached}")
     else:
-        print(f"    Apple MLX      MISS not importable (Apple Silicon only)")
+        print("    Apple MLX      MISS not importable (Apple Silicon only)")
     nvidia = report["nvidia"]
     if nvidia.get("available"):
         n = len(nvidia.get("devices", []))
@@ -264,9 +268,11 @@ def print_report(report: dict[str, Any]) -> None:
     if bundle.get("checked"):
         if bundle.get("exists"):
             print(f"  Bundle         : {bundle['path']}")
-            print(f"                  manifest={_fmt_bool(bundle.get('has_manifest'))} "
-                  f"chunks={_fmt_bool(bundle.get('has_chunks'))} "
-                  f"embeddings={_fmt_bool(bundle.get('has_embeddings'))}")
+            print(
+                f"                  manifest={_fmt_bool(bundle.get('has_manifest'))} "
+                f"chunks={_fmt_bool(bundle.get('has_chunks'))} "
+                f"embeddings={_fmt_bool(bundle.get('has_embeddings'))}"
+            )
             if bundle.get("chunk_count") is not None:
                 sha_ok = bundle.get("chunks_sha_match")
                 sha_str = " (SHA ok)" if sha_ok else " (SHA MISMATCH)" if sha_ok is False else ""
@@ -275,7 +281,9 @@ def print_report(report: dict[str, Any]) -> None:
                 bp = bundle.get("build_provider", "")
                 if bb:
                     backend_str = f" build={bb}/{bp}" if bp else f" build={bb}"
-                print(f"                  {bundle['chunk_count']} chunks, model={bundle.get('embedding_model')}{backend_str}{sha_str}")
+                print(
+                    f"                  {bundle['chunk_count']} chunks, model={bundle.get('embedding_model')}{backend_str}{sha_str}"
+                )
         else:
             print(f"  Bundle         : not found at {bundle['path']}")
 

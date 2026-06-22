@@ -106,8 +106,8 @@ class _BertLayer:
         nn = _mx_nn[1]
         self.attention = _SelfAttention(dim, n_heads)
         self.attention_output_layernorm = nn.LayerNorm(dim)
-        self.intermediate = nn.Linear(dim, ff_dim)    # FFN up
-        self.output = nn.Linear(ff_dim, dim)          # FFN down
+        self.intermediate = nn.Linear(dim, ff_dim)  # FFN up
+        self.output = nn.Linear(ff_dim, dim)  # FFN down
         self.ffn_output_layernorm = nn.LayerNorm(dim)
 
     def __call__(self, x, mask):
@@ -139,9 +139,15 @@ class BgeModel:
       - No causal mask (BGE is bidirectional, used for retrieval)
     """
 
-    def __init__(self, vocab_size: int = 30522, dim: int = 768,
-                 n_layers: int = 12, n_heads: int = 12, ff_dim: int = 3072,
-                 max_seq: int = 512):
+    def __init__(
+        self,
+        vocab_size: int = 30522,
+        dim: int = 768,
+        n_layers: int = 12,
+        n_heads: int = 12,
+        ff_dim: int = 3072,
+        max_seq: int = 512,
+    ):
         _mx, nn = _import_mlx()
         self.word_embeddings = nn.Embedding(vocab_size, dim)
         self.position_embeddings = nn.Embedding(max_seq, dim)
@@ -297,5 +303,6 @@ class MlxEmbedder(Embedder):
         )["attention_mask"].astype(np.float32)
         # use the shared mean_pool from base
         from .base import mean_pool
+
         pooled = mean_pool(h, mask)
         return l2_normalize(pooled)

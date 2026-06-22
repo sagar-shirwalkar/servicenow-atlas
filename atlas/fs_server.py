@@ -20,23 +20,27 @@ import asyncio
 import json
 import shutil
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
+import structlog
 import yaml
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .log import configure_logging, get_logger
+
 app = Server("servicenow-fs")
+logger = get_logger()
 
 
 def _repo_root(args_repo: str) -> Path:
     p = Path(args_repo).expanduser().resolve()
     if not (p / "markdown").is_dir():
-        raise FileNotFoundError(
-            f"No 'markdown/' directory at {p}. Did you clone ServiceNowDocs?"
-        )
+        raise FileNotFoundError(f"No 'markdown/' directory at {p}. Did you clone ServiceNowDocs?")
     return p
 
 
@@ -90,9 +94,7 @@ def list_publication_files(root: Path, publication: str) -> list[dict[str, Any]]
     return out
 
 
-def read_publication_file(
-    root: Path, publication: str, file: str, max_chars: int = 50_000
-) -> dict[str, Any]:
+def read_publication_file(root: Path, publication: str, file: str, max_chars: int = 50_000) -> dict[str, Any]:
     target = (root / "markdown" / publication / file).resolve()
     pub_root = (root / "markdown" / publication).resolve()
     if not str(target).startswith(str(pub_root)):
@@ -121,6 +123,7 @@ def _git(*args: str, cwd: Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     ).stdout.strip()
 
 
@@ -264,6 +267,11 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    cid = str(uuid.uuid4())[:8]
+    structlog.contextvars.bind_contextvars(correlation_id=cid)
+    _start = time.perf_counter()
+    logger.info("Tool called", tool=name)
+
     root = _repo_root(ARGS.repo)
     try:
         if name == "list_publications":
@@ -292,7 +300,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "get_release_info":
             return _result(get_release_info(root))
     except (FileNotFoundError, ValueError) as e:
+        logger.error("Tool failed", tool=name, error=str(e))
         return _result({"error": str(e)})
+    finally:
+        elapsed = (time.perf_counter() - _start) * 1000
+        logger.info("Tool finished", tool=name, duration_ms=round(elapsed, 2))
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -315,6 +327,7 @@ async def serve() -> None:
 
 
 def main() -> None:
+    configure_logging()
     asyncio.run(serve())
 
 

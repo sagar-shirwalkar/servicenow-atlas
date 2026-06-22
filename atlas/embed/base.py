@@ -23,7 +23,7 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 
@@ -103,6 +103,7 @@ def has_nvidia_gpu() -> bool:
 def has_mlx() -> bool:
     try:
         import mlx.core  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -111,6 +112,7 @@ def has_mlx() -> bool:
 def has_onnxruntime_gpu() -> bool:
     try:
         import onnxruntime as ort  # noqa: F401
+
         return "CUDAExecutionProvider" in ort.get_available_providers()
     except ImportError:
         return False
@@ -145,9 +147,7 @@ def resolve_backend(prefer: str | None = None) -> tuple[str, str]:
             return has_mlx() and is_apple_silicon()
         if name == "onnx-gpu":
             return has_onnxruntime_gpu() and has_nvidia_gpu()
-        if name == "onnx-cpu":
-            return True
-        return False
+        return name == "onnx-cpu"
 
     if choice == "mlx":
         if _ok("mlx"):
@@ -168,7 +168,7 @@ def resolve_backend(prefer: str | None = None) -> tuple[str, str]:
     return "onnx-cpu", "no fast path available; using portable ONNX+CPU"
 
 
-def get_embedder(model_id: str | Path, prefer: str | None = None) -> "Embedder":
+def get_embedder(model_id: str | Path, prefer: str | None = None) -> Embedder:
     """Construct an :class:`Embedder` for the best available backend.
 
     ``model_id`` can be a Hugging Face model id (``"Xenova/bge-base-en-v1.5"``)
@@ -179,11 +179,14 @@ def get_embedder(model_id: str | Path, prefer: str | None = None) -> "Embedder":
     backend, _reason = resolve_backend(prefer)
     if backend == "mlx":
         from .mlx import MlxEmbedder
+
         return MlxEmbedder(model_id)
     if backend == "onnx-gpu":
         from .onnx import OnnxEmbedder
+
         return OnnxEmbedder(model_id, prefer_gpu=True)
     from .onnx import OnnxEmbedder
+
     return OnnxEmbedder(model_id, prefer_gpu=False)
 
 
@@ -219,6 +222,7 @@ class Embedder(ABC):
         which rank last in cosine similarity without breaking search.
         """
         import time
+
         n = len(texts)
         out = np.zeros((n, self.dim), dtype=np.float32)
         if n == 0:
@@ -230,6 +234,7 @@ class Embedder(ABC):
         if show_progress:
             try:
                 from tqdm import tqdm
+
                 iterator = tqdm(indices, desc=f"Embedding ({self.active_provider})", unit="batch")
             except ImportError:
                 iterator = indices
@@ -248,16 +253,10 @@ class Embedder(ABC):
                 except Exception as e:  # noqa: BLE001
                     attempt += 1
                     if attempt > max_retries:
-                        print(
-                            f"\n  [embed] giving up on batch {i}-{j} after "
-                            f"{max_retries} retries: {e}"
-                        )
+                        print(f"\n  [embed] giving up on batch {i}-{j} after {max_retries} retries: {e}")
                         break
-                    wait = 2.0 ** attempt
-                    print(
-                        f"\n  [embed] batch {i}-{j} failed (attempt {attempt}): "
-                        f"{e}. Retrying in {wait:.1f}s..."
-                    )
+                    wait = 2.0**attempt
+                    print(f"\n  [embed] batch {i}-{j} failed (attempt {attempt}): {e}. Retrying in {wait:.1f}s...")
                     time.sleep(wait)
 
             if not show_progress:

@@ -86,9 +86,7 @@ def _existing_bundle_backup(output: Path, backup_root: Path) -> None:
     if not backup_root:
         return
     backup_root.mkdir(parents=True, exist_ok=True)
-    ts = subprocess.run(
-        ["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    ts = subprocess.run(["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True).stdout.strip()
     dest = backup_root / f"snapshot-{ts}"
     print(f"  Backing up existing bundle to {dest}")
     subprocess.run(
@@ -154,10 +152,8 @@ def _run() -> int:
     if expected:
         actual = _sha256(args.output / manifest["artifacts"]["chunks"])
         if actual != expected:
-            raise RuntimeError(
-                f"chunks.parquet SHA mismatch: expected {expected}, got {actual}"
-            )
-        print(f"  chunks.parquet SHA256 verified")
+            raise RuntimeError(f"chunks.parquet SHA mismatch: expected {expected}, got {actual}")
+        print("  chunks.parquet SHA256 verified")
 
     print(f"\n  Bundle ready at {args.output}")
     print(f"    chunk_count : {manifest.get('chunk_count')}")

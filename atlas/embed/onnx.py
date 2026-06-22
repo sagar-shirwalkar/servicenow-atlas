@@ -104,8 +104,6 @@ class OnnxEmbedder(Embedder):
         # ndarray | SparseTensor | list | dict. The BGE model
         # always returns last_hidden_state as an ndarray first.
         hidden = outputs[0]
-        assert isinstance(hidden, np.ndarray), (
-            f"expected ndarray from BGE first output, got {type(hidden).__name__}"
-        )
+        assert isinstance(hidden, np.ndarray), f"expected ndarray from BGE first output, got {type(hidden).__name__}"
         pooled = mean_pool(hidden, encoded["attention_mask"])
         return l2_normalize(pooled)

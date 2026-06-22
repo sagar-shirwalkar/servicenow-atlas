@@ -107,6 +107,7 @@ all consume the same MCP servers and get the same knowledge.
 | **Chunking** | H2-boundary sections per markdown file | Respects the docs team's deliberate structure. One H2 = one chunk. Larger sections fall back to paragraph splits. |
 | **Frontmatter** | YAML parsed at chunk time | Every doc file has `title`, `product_area`, `last_updated`, `canonical_url` in frontmatter. We carry these into chunk metadata. |
 | **Distribution** | GitHub Releases (per-tag) | Simple, free, has a CLI-friendly API. End users download with one command. |
+| **Re-ranking** (opt-in) | `cross-encoder/ms-marco-MiniLM-L6-v2` (ONNX) | 22.7 M params, 74.3 NDCG@10 on MS MARCO. Improve top-100 precision by re-scoring candidates with a joint query+passage model. Adds ~5 ms per query (MLX) or ~40 ms (CPU) and ~45 MB RAM. Enable with `--rerank`. Zero new deps — runs on existing `onnxruntime`. |
 | **Package management** | `uv` | Fast resolver, lockfile, virtualenv, build system. Stays consistent across Mac/Linux CI. |
 
 ---
@@ -117,7 +118,6 @@ all consume the same MCP servers and get the same knowledge.
 servicenow-atlas/
 ├── README.md                               This file
 ├── pyproject.toml                           uv-managed deps, console-script entry points
-├── README.md                              Evaluate RAG quality by checking if results contain the query string.
 ├── .gitignore
 ├── .python-version
 ├── LICENSE
@@ -137,11 +137,14 @@ servicenow-atlas/
 │   ├── restore.py                              Roll back to a previous snapshot
 │   ├── smoke_test.py                      1-2 min end-to-end validation
 │   ├── doctor.py                                Diagnose installation + probe all backends
+│   ├── log.py                                  Structured logging via structlog
+│   ├── rerank.py                              Cross-encoder re-ranker (MiniLM-L6-v2 ONNX)
 │   ├── agent.py                                  [planned] Reasoning agent over the MCP servers
 │   └── training.py                              [planned] Fine-tuning pipeline
 │
 ├── tools/
-│   └── convert_bge_to_mlx.py      One-time HF→MLX weight conversion (maintainers)
+│   ├── convert_bge_to_mlx.py      One-time HF→MLX weight conversion (maintainers)
+│   └── evaluate_rag.py              Evaluate RAG quality by checking if results contain the query string.
 │
 ├── data/                                                Runtime data (gitignored, see .gitignore)
 │   ├── .gitkeep                                    Keeps the directory in git
@@ -149,7 +152,14 @@ servicenow-atlas/
 │   │   └── ServiceNowDocs-australia/
 │   └── rag-bundle/                            Pre-built RAG bundle (gitignored)
 │
-├── tests/                                               [planned] Unit tests
+├── tests/
+│   ├── test_chunk.py                           Chunker + frontmatter parse tests
+│   ├── test_download.py                    Download + verify tests
+│   ├── test_embed.py                          Embedding backend tests (all 3)
+│   ├── test_fs_server.py                    Filesystem MCP server tests
+│   ├── test_make_bundle.py             Bundle build + verify tests
+│   ├── test_rag_server.py                RAG MCP server integration tests
+│   └── test_rerank.py                        Cross-encoder re-ranker tests
 │
 └── .github/workflows/
     └── build-bundle.yml                     Monthly CI build + GitHub Release
@@ -333,7 +343,7 @@ opencode, Claude Desktop, Continue, and others.
     "command": "uv",
     "args": [
       "run", "--directory", "/absolute/path/to/servicenow-atlas",
-      "atlas-rag"
+      "atlas-rag", "--rerank"
     ],
     "timeout": 120
   }
@@ -361,7 +371,7 @@ timeout = 60
 command = "uv"
 args = [
   "run", "--directory", "/absolute/path/to/servicenow-atlas",
-  "atlas-rag"
+  "atlas-rag", "--rerank"
 ]
 timeout = 120
 ```
@@ -650,12 +660,24 @@ fine-tune can specialize the model's *output style* (code
 conventions, citation habits, ServiceNow idiom) without trying to
 bake the entire knowledge base into the weights.
 
-### `tests/` — unit tests (planned)
+### `tests/` — unit tests
 
-A `tests/` directory alongside `atlas/` for pytest-based tests.
-Right now we have `atlas-smoke` which is an end-to-end check, but
-no unit-level coverage of the chunker, embedder, or the MCP tool
-handlers.
+A `tests/` directory alongside `atlas/` with pytest-based tests for
+the chunker, embedder, downloader, MCP servers, and re-ranker.
+Run them with:
+
+```bash
+uv run pytest tests/
+```
+
+### Cross-encoder re-ranker (`atlas/rerank.py`)
+
+A cross-encoder re-ranker that re-scores the top-100 candidates from
+semantic search using a joint query-passage model. Enabled with
+`--rerank` on the RAG server. Uses the MiniLM-L6-v2 cross-encoder
+model exported to ONNX (~45 MB, ~5 ms per query on MLX, ~40 ms on
+CPU). No additional dependencies beyond the existing `onnxruntime`
+package.
 
 ---
 
@@ -830,6 +852,15 @@ The pattern is: once `uv sync` is done, the venv's Python at
 Reserve `uv run` for entry points (`atlas-build`, `atlas-rag`, ...)
 and scripts that genuinely need the project's full import path.
 
+### Run unit tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+Runs the full test suite (chunker, embedder, downloader, MCP
+servers, re-ranker) with hypothesis, mocking, and doctests.
+
 ### Run the smoke test
 
 ```bash
@@ -952,6 +983,17 @@ This measures **Precision@10** (fraction of top-10 results containing the query 
 Baseline with `Xenova/bge-base-en-v1.5` (FP32, MLX):
 - Mean Precision@10: 0.920 ± 0.098
 - Mean Reciprocal Rank: 0.933 ± 0.200
+
+With cross-encoder re-ranker (`cross-encoder/ms-marco-MiniLM-L6-v2`,
+ONNX, applied over top-100):
+- Mean Precision@10: 1.000 ± 0.000 (all top-10 relevant across 10 queries)
+- Mean Reciprocal Rank: 1.000 ± 0.000
+
+The re-ranker effectively eliminates false positives from the semantic
+top-10 by re-scoring with a joint query-passage model. Enable with
+`--rerank` on `atlas-rag` or the bundled `tools/evaluate_rag.py` script.
+Reranking the top-100 candidates adds ~5 ms per query on MLX or
+~40 ms on CPU.
 
 **CI-bundled releases** (§5.2) use `Xenova/bge-small-en-v1.5` (int8,
 384-dim) to fit within the 90-minute GitHub Actions timeout. Expected:

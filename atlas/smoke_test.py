@@ -71,10 +71,7 @@ def _run_tests() -> int:
         )
         print(f"  search('incident') returned {len(hits)} hits")
         for h in hits:
-            print(
-                f"    - {h['publication']}/{h['file']} "
-                f"heading={h['heading']!r} score={h['score']:.3f}"
-            )
+            print(f"    - {h['publication']}/{h['file']} heading={h['heading']!r} score={h['score']:.3f}")
         if not hits:
             print("  ! No hits for 'incident'")
             return 1
