@@ -83,6 +83,13 @@ class Bundle:
             self.embedder = get_embedder(DEFAULT_MODEL_ID, prefer="cpu")
         self._norms_safe = self.norms.clip(min=1e-9)
 
+    @staticmethod
+    def _title_boost(titles: pd.Series, query_tokens: set[str]) -> np.ndarray:
+        boost = np.zeros(len(titles), dtype=np.float32)
+        for t in query_tokens:
+            boost += titles.str.contains(t, na=False, regex=False).values.astype(np.float32)
+        return boost * 0.05
+
     def search(
         self,
         query: str,
@@ -96,6 +103,9 @@ class Bundle:
     ) -> list[dict[str, Any]]:
         q = self.embedder.embed([query])[0]
         vec_scores = (self.embeddings @ q).flatten() / self._norms_safe
+        query_tokens = set(query.lower().split())
+        tb = self._title_boost(self.chunks["title"], query_tokens) if query_tokens else 0.0
+        boosted = vec_scores + tb
 
         mask = np.ones(len(self.chunks), dtype=bool)
         if publication:
@@ -107,27 +117,29 @@ class Bundle:
 
         if mode == "vector":
             if candidate_k is not None:
-                masked_vec = np.where(mask, vec_scores, -np.inf)
+                masked = np.where(mask, boosted, -np.inf)
                 pool = min(candidate_k, int(mask.sum()))
                 if pool == 0:
                     return []
-                pool_idx = np.argpartition(-masked_vec, pool - 1)[:pool]
-                order = np.argsort(-vec_scores[pool_idx])
+                pool_idx = np.argpartition(-masked, pool - 1)[:pool]
+                order = np.argsort(-boosted[pool_idx])
                 pool_idx = pool_idx[order]
-                return self._collect(min_score, vec_scores[pool_idx], vec_scores[pool_idx], pool, idx_map=pool_idx)
-            scores = np.where(mask, vec_scores, -np.inf)
-            return self._collect(min_score, scores, scores, top_k)
+                return self._collect(min_score, boosted[pool_idx], boosted[pool_idx], pool, idx_map=pool_idx)
+            scores = np.where(mask, boosted, -np.inf)
+            order = np.argsort(-scores)
+            return self._collect(min_score, scores[order], scores[order], top_k, idx_map=order)
 
         candidate_pool = max(top_k * 20, 50)
-        masked_vec = np.where(mask, vec_scores, -np.inf)
+        masked = np.where(mask, boosted, -np.inf)
         pool_size = min(candidate_pool, int(mask.sum()))
         if pool_size == 0:
             return []
-        pool_idx = np.argpartition(-masked_vec, pool_size - 1)[:pool_size]
+        pool_idx = np.argpartition(-masked, pool_size - 1)[:pool_size]
 
-        query_tokens = set(query.lower().split())
         if not query_tokens:
-            return self._collect(min_score, vec_scores[pool_idx], vec_scores[pool_idx], top_k)
+            order = np.argsort(-boosted[pool_idx])
+            pool_idx = pool_idx[order]
+            return self._collect(min_score, boosted[pool_idx], boosted[pool_idx], top_k)
 
         kw_raw = np.array(
             [sum(t in self.chunks.iloc[i]["text"].lower() for t in query_tokens) for i in pool_idx],
@@ -135,13 +147,13 @@ class Bundle:
         )
 
         if mode == "keyword":
-            scores = kw_raw
+            scores = kw_raw + tb[pool_idx]
             vec_ref = kw_raw
         else:
             kw_max = kw_raw.max()
             kw_norm = kw_raw / kw_max if kw_max > 0 else kw_raw
-            scores = 0.6 * vec_scores[pool_idx] + 0.4 * kw_norm
-            vec_ref = vec_scores[pool_idx]
+            scores = 0.6 * boosted[pool_idx] + 0.4 * kw_norm
+            vec_ref = boosted[pool_idx]
 
         order = np.argsort(-scores)
         pool_idx = pool_idx[order]
