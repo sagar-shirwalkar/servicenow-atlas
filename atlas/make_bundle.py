@@ -49,7 +49,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from .chunk import chunk_file
 from .embed import (
@@ -178,8 +179,19 @@ def walk_markdown(repo_path: Path) -> list[Path]:
     return sorted(md_root.rglob("*.md"))
 
 
-def build_chunk_dataframe(files: list[Path], repo_root: Path) -> pd.DataFrame:
-    rows: list[dict] = []
+def build_chunk_table(files: list[Path], repo_root: Path) -> pa.Table:
+    cols: dict[str, list] = {
+        "id": [],
+        "text": [],
+        "publication": [],
+        "file": [],
+        "heading": [],
+        "is_code": [],
+        "title": [],
+        "product_area": [],
+        "last_updated": [],
+        "canonical_url": [],
+    }
     for i, path in enumerate(files, 1):
         try:
             chunks = chunk_file(path, repo_root)
@@ -187,23 +199,22 @@ def build_chunk_dataframe(files: list[Path], repo_root: Path) -> pd.DataFrame:
             print(f"  [chunk] {path.name}: {e}")
             continue
         for j, c in enumerate(chunks):
-            rows.append(
-                {
-                    "id": f"{c['publication']}/{c['file']}#{j}",
-                    "text": c["text"],
-                    "publication": c["publication"],
-                    "file": c["file"],
-                    "heading": c["heading"],
-                    "is_code": c["is_code"],
-                    "title": c["frontmatter"].get("title", ""),
-                    "product_area": c["frontmatter"].get("product_area", ""),
-                    "last_updated": str(c["frontmatter"].get("last_updated", "")),
-                    "canonical_url": c["frontmatter"].get("canonical_url", ""),
-                }
-            )
+            text = c["text"]
+            if not text.strip():
+                continue
+            cols["id"].append(f"{c['publication']}/{c['file']}#{j}")
+            cols["text"].append(text)
+            cols["publication"].append(c["publication"])
+            cols["file"].append(c["file"])
+            cols["heading"].append(c["heading"])
+            cols["is_code"].append(c["is_code"])
+            cols["title"].append(c["frontmatter"].get("title", ""))
+            cols["product_area"].append(c["frontmatter"].get("product_area", ""))
+            cols["last_updated"].append(str(c["frontmatter"].get("last_updated", "")))
+            cols["canonical_url"].append(c["frontmatter"].get("canonical_url", ""))
         if i % 500 == 0:
-            print(f"  Chunked {i}/{len(files)} files ({len(rows)} chunks so far)")
-    return pd.DataFrame(rows)
+            print(f"  Chunked {i}/{len(files)} files ({len(cols['text'])} chunks so far)")
+    return pa.table(cols)
 
 
 def stage_model(model_dir: Path, bundle_dir: Path) -> Path:
@@ -336,13 +347,12 @@ def _run() -> int:
         files = files[: args.limit]
     print(f"  Found {len(files)} markdown files")
 
-    df = build_chunk_dataframe(files, repo_path)
-    df = df[df["text"].str.strip().astype(bool)]
-    print(f"  Built {len(df)} chunks")
+    table = build_chunk_table(files, repo_path)
+    print(f"  Built {len(table)} chunks")
 
     args.output.mkdir(parents=True, exist_ok=True)
     chunks_path = args.output / "chunks.parquet"
-    df.to_parquet(chunks_path, index=False, compression="snappy")
+    pq.write_table(table, chunks_path)
     print(f"  Wrote {chunks_path}")
 
     if args.skip_embed:
@@ -352,7 +362,7 @@ def _run() -> int:
             args.repo_url,
             args.branch,
             sha,
-            len(df),
+            len(table),
             args.model,
             embedding_dim=768,
         )
@@ -366,7 +376,7 @@ def _run() -> int:
     print(f"  Active provider: {embedder.active_provider}")
     print(f"  Embedding dim: {embedder.dim}")
     embeddings = embed_chunks(
-        df["text"].tolist(),
+        table.column("text").to_pylist(),
         args.model,
         args.prefer,
         backend,
@@ -385,7 +395,7 @@ def _run() -> int:
         args.repo_url,
         args.branch,
         sha,
-        len(df),
+        len(table),
         args.model,
         embedding_dim=embedder.dim,
         embedding_backend=backend,
@@ -394,7 +404,7 @@ def _run() -> int:
     print(f"  Wrote {manifest_path}")
 
     print("\n  Bundle ready.")
-    print(f"    chunks : {len(df)}")
+    print(f"    chunks : {len(table)}")
     print(f"    dim    : {embeddings.shape[1]}")
     print(f"    path   : {args.output.resolve()}")
     return 0

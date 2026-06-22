@@ -13,7 +13,6 @@ dependencies = [
     "tokenizers>=0.19",
     "sentencepiece>=0.2",
     "onnxruntime>=1.18",
-    "pandas>=2.2",
     "structlog>=24.1",
 ]
 
