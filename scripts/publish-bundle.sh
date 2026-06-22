@@ -12,6 +12,12 @@ set -euo pipefail
 #   ./scripts/publish-bundle.sh <owner/repo>
 #   ./scripts/publish-bundle.sh --rebuild <owner/repo>
 
+if ! command -v gh &>/dev/null; then
+  echo "Error: gh (GitHub CLI) is required."
+  echo "  brew install gh && gh auth login"
+  exit 1
+fi
+
 REBUILD=false
 if [ "${1:-}" = "--rebuild" ]; then
   REBUILD=true
