@@ -37,6 +37,7 @@ def restore(snapshot: Path, bundle_dir: Path) -> None:
     subprocess.run(
         ["tar", "-xzf", str(snapshot), "-C", str(parent)],
         check=True,
+        timeout=120,
     )
     extracted = parent / name
     if not (extracted / "manifest.json").is_file():
@@ -81,6 +82,7 @@ def _run() -> int:
         subprocess.run(
             [sys.executable, "-m", "atlas.backup", "--bundle", str(args.bundle)],
             check=True,
+            timeout=120,
         )
 
     snapshot = backup_dir / args.source if args.source else pick_latest(backup_dir)

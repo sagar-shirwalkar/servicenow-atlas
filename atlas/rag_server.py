@@ -277,7 +277,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     try:
         args = _get_args()
-        bundle = _bundle_cache(args.bundle, args.prefer)
+        bundle = await _bundle_cache(args.bundle, args.prefer)
     except FileNotFoundError as e:
         logger.warning("Bundle not found", error=str(e))
         return _result({"error": str(e)})
@@ -287,7 +287,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return _result(bundle.manifest)
 
         top_k = arguments.get("top_k", 5)
-        reranker = _get_reranker()
+        reranker = await _get_reranker()
         search_kw: dict[str, Any] = {
             "publication": arguments.get("publication"),
             "product_area": arguments.get("product_area"),
@@ -332,11 +332,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 _bundle_instance: Bundle | None = None
 _reranker: CrossEncoderReranker | None = None
+_bundle_lock = asyncio.Lock()
+_reranker_lock = asyncio.Lock()
 
 
-def _bundle_cache(bundle_arg: str, prefer: str) -> Bundle:
+async def _bundle_cache(bundle_arg: str, prefer: str) -> Bundle:
     global _bundle_instance
-    if _bundle_instance is None:
+    if _bundle_instance is not None:
+        return _bundle_instance
+    async with _bundle_lock:
+        if _bundle_instance is not None:
+            return _bundle_instance
         bundle_path = Path(bundle_arg).expanduser()
         if not bundle_path.is_absolute():
             bundle_path = bundle_path.resolve()
@@ -346,9 +352,13 @@ def _bundle_cache(bundle_arg: str, prefer: str) -> Bundle:
     return _bundle_instance
 
 
-def _get_reranker() -> CrossEncoderReranker | None:
+async def _get_reranker() -> CrossEncoderReranker | None:
     global _reranker
-    if _reranker is None and _get_args().rerank:
+    if _reranker is not None or not _get_args().rerank:
+        return _reranker
+    async with _reranker_lock:
+        if _reranker is not None:
+            return _reranker
         _reranker = CrossEncoderReranker()
     return _reranker
 

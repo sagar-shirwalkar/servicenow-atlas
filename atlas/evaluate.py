@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atlas.fs_server import _repo_root, read_publication_file
+from atlas.fs_server import read_publication_file, repo_root
 from atlas.rag_server import Bundle
 
 QUERIES = [
@@ -52,7 +52,7 @@ def evaluate(
             file_path = result["file"]
             try:
                 file_info = read_publication_file(
-                    _repo_root(str(docs_root)),
+                    repo_root(str(docs_root)),
                     pub,
                     file_path,
                     max_chars=10000,

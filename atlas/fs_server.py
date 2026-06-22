@@ -37,7 +37,7 @@ app = Server("servicenow-fs")
 logger = get_logger()
 
 
-def _repo_root(args_repo: str) -> Path:
+def repo_root(args_repo: str) -> Path:
     p = Path(args_repo).expanduser().resolve()
     if not (p / "markdown").is_dir():
         raise FileNotFoundError(f"No 'markdown/' directory at {p}. Did you clone ServiceNowDocs?")
@@ -157,7 +157,7 @@ def full_text_search(
     if not regex:
         cmd.append("--fixed-strings")
     cmd.extend(["--max-count", "1", query, str(search_root)])
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     hits: list[dict[str, Any]] = []
     for line in proc.stdout.splitlines()[:max_results]:
         if ":" not in line:
@@ -272,7 +272,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     _start = time.perf_counter()
     logger.info("Tool called", tool=name)
 
-    root = _repo_root(_get_args().repo)
+    root = repo_root(_get_args().repo)
     try:
         if name == "list_publications":
             return _result(list_publications(root))

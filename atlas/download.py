@@ -32,12 +32,12 @@ GITHUB_API = "https://api.github.com"
 
 def _http_json(url: str, headers: dict[str, str] | None = None) -> dict:
     req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _http_download(url: str, dest: Path) -> None:
-    with urllib.request.urlopen(url) as resp, dest.open("wb") as out:
+    with urllib.request.urlopen(url, timeout=300) as resp, dest.open("wb") as out:
         shutil.copyfileobj(resp, out)
 
 
@@ -69,6 +69,7 @@ def _extract(archive: Path, target: Path) -> None:
         subprocess.run(
             ["tar", "--zstd", "-xf", str(archive), "-C", str(target), "--strip-components=1"],
             check=True,
+            timeout=120,
         )
     elif name.endswith(".tar.gz"):
         with tarfile.open(archive, "r:gz") as tf:
@@ -86,12 +87,13 @@ def _existing_bundle_backup(output: Path, backup_root: Path) -> None:
     if not backup_root:
         return
     backup_root.mkdir(parents=True, exist_ok=True)
-    ts = subprocess.run(["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True).stdout.strip()
+    ts = subprocess.run(["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True, timeout=5).stdout.strip()
     dest = backup_root / f"snapshot-{ts}"
     print(f"  Backing up existing bundle to {dest}")
     subprocess.run(
         ["tar", "-czf", str(dest) + ".tar.gz", "-C", str(output.parent), output.name],
         check=True,
+        timeout=120,
     )
 
 
@@ -105,6 +107,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Where to store backups of the existing bundle (default: <output>/.backups)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Allow extracting into a non-empty directory that isn't a bundle",
     )
     return p.parse_args()
 
@@ -131,6 +139,13 @@ def _run() -> int:
             raise RuntimeError("Downloaded size mismatch")
 
         if args.output.exists():
+            is_bundle = (args.output / "manifest.json").is_file()
+            if not is_bundle and not args.force:
+                print(
+                    f"  Refusing to wipe {args.output} — no manifest.json found.\n"
+                    f"  Pass --force to extract into a non-bundle directory."
+                )
+                return 1
             for child in args.output.iterdir():
                 if child.name == ".backups":
                     continue

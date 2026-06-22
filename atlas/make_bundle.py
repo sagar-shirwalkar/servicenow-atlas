@@ -108,6 +108,7 @@ def current_sha(repo_path: Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=10,
     ).stdout.strip()
 
 
