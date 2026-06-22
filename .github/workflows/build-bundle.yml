@@ -1,23 +1,20 @@
-# Monthly cron + manual dispatch + push-to-main. Clones the
-# ServiceNowDocs repo, builds a RAG bundle with atlass-build,
-# smoke-tests, and publishes a new GitHub Release with the bundle
-# tarball. The release tag is australia-YYYYMMDD so users can pin
-# to a specific ServiceNow release family.
+# Smoke test only. The bundle is built locally on Apple Silicon (or any
+# machine with MLX/CUDA) and published via scripts/publish-bundle.sh.
+# This workflow:
+#   - Runs atlas-smoke on every push to main that touches atlas/ source.
+#   - Runs atlas-smoke monthly to catch regressions in the docs source.
+#   - Accepts manual dispatch (for one-off smoke runs).
 #
-# The embedding step is automatically parallelized across all CPU
-# cores (see atlas/make_bundle.py embed_chunks()). We use a 4-core
-# runner so 4 parallel ONNX workers finish the 135k-chunk embedding
-# in ~45 minutes, well within the 90-minute timeout.
+# To publish a release:
+#   1. uv sync
+#   2. ./scripts/publish-bundle.sh <owner>/<repo>
+#
+# See "Publishing a release" in the README for details.
 
 name: build-bundle
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (leave empty for auto: 'australia-YYYYMMDD')"
-        required: false
-        default: ""
   schedule:
     - cron: "0 6 1 * *"
   push:
@@ -29,13 +26,11 @@ on:
 
 env:
   DOCS_DIR: data/servicenow-docs/ServiceNowDocs-australia
-  BUNDLE_DIR: data/rag-bundle
-  BUNDLE_REPO: ${{ github.repository }}
 
 jobs:
-  build:
-    runs-on: ubuntu-latest-4-cores
-    timeout-minutes: 90
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -57,58 +52,8 @@ jobs:
             https://github.com/ServiceNow/ServiceNowDocs.git \
             "$DOCS_DIR"
 
-      - name: Verify model cache
-        run: |
-          uv run python - <<'PY'
-          from huggingface_hub import snapshot_download
-          path = snapshot_download("Xenova/bge-small-en-v1.5")
-          print(f"Model cached at: {path}")
-          import os
-          onnx_files = [f for f in os.listdir(os.path.join(path, "onnx")) if f.endswith(".onnx")]
-          print(f"ONNX variants: {onnx_files}")
-          PY
-
-      - name: Build bundle
-        run: |
-          uv run atlas-build \
-            --repo-path "$DOCS_DIR" \
-            --branch australia \
-            --output "$BUNDLE_DIR" \
-            --model Xenova/bge-small-en-v1.5
-
       - name: Smoke test
         run: |
           uv run atlas-smoke
-
-      - name: Compress bundle
-        run: |
-          tar -czf bundle.tar.gz -C "$BUNDLE_DIR" .
-          ls -lh bundle.tar.gz
-
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            TS=$(date -u +%Y%m%d)
-            echo "name=australia-${TS}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: "ServiceNow Atlas bundle - ${{ steps.tag.outputs.name }}"
-          body: |
-            Pre-built RAG bundle for the ServiceNow Australia docs release.
-
-            Source SHA: see `manifest.json` inside the bundle.
-            Embedding model: Xenova/bge-small-en-v1.5 (ONNX int8, 384-dim).
-
-            Install with:
-            ```
-            uv run atlas-download --repo ${{ env.BUNDLE_REPO }} --tag ${{ steps.tag.outputs.name }} --output ~/data/rag-bundle
-            ```
-          files: bundle.tar.gz
-          fail_on_unmatched_files: true
+          echo "Smoke test passed. To publish a release, run:"
+          echo "  ./scripts/publish-bundle.sh \${{ github.repository }}"

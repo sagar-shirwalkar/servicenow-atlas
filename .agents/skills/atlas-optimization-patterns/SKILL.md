@@ -54,6 +54,11 @@ description: >-
    `(embeddings @ query).flatten() / norms`. No FAISS, no Qdrant, no
    vector database. Numpy is sufficient and has zero infrastructure.
 
+9. **Don't rebuild what's already built.** The bundle is the slowest
+   thing we produce (~15 min MLX, hours on CPU). Default to publishing
+   the existing `./data/rag-bundle`. Only rebuild when the docs source
+   has changed. This is encoded in `scripts/publish-bundle.sh`.
+
 ## Banned dependencies
 
 - `pandas` — replaced by `pyarrow` + `numpy`. See `atlas/make_bundle.py`
