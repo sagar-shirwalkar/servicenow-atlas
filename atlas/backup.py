@@ -11,16 +11,13 @@ pruned automatically.
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
 def _timestamp() -> str:
-    return subprocess.run(
-        ["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    return subprocess.run(["date", "+%Y%m%dT%H%M%SZ"], capture_output=True, text=True, check=True, timeout=5).stdout.strip()
 
 
 def snapshot(bundle_dir: Path, backup_dir: Path) -> Path:
@@ -40,6 +37,7 @@ def snapshot(bundle_dir: Path, backup_dir: Path) -> Path:
             name,
         ],
         check=True,
+        timeout=120,
     )
     return archive
 

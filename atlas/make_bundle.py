@@ -34,7 +34,8 @@ import json
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -43,7 +44,6 @@ import pandas as pd
 from .chunk import chunk_file
 from .embed import (
     DEFAULT_MODEL_ID,
-    Embedder,
     get_embedder,
     resolve_backend,
 )
@@ -55,21 +55,39 @@ DEFAULT_LOCAL_PATH = "./data/servicenow-docs/ServiceNowDocs-australia"
 BUNDLE_SCHEMA_VERSION = 1
 
 
+def _git_retry(cmd: list[str], max_attempts: int = 3) -> None:
+    """Run a subprocess with retry + exponential backoff + timeout.
+
+    Git network operations (fetch, clone) fail transiently. This
+    helper retries up to ``max_attempts`` times with 2^attempt
+    backoff and caps each attempt at 120 seconds.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            subprocess.run(cmd, check=True, timeout=120)
+            return
+        except (subprocess.CalledProcessError, OSError, TimeoutError) as e:
+            if attempt == max_attempts:
+                raise
+            wait = 2.0**attempt
+            print(f"  [retry] git command failed (attempt {attempt}/{max_attempts}): {e}")
+            print(f"  [retry] waiting {wait:.0f}s...")
+            time.sleep(wait)
+
+
 def ensure_repo(repo_path: Path, repo_url: str, branch: str) -> Path:
     """Clone or update the docs repo at the pinned branch."""
     if repo_path.exists() and (repo_path / ".git").is_dir():
         print(f"  Fetching latest {branch} into {repo_path}...")
-        subprocess.run(
-            ["git", "-C", str(repo_path), "fetch", "origin", branch],
-            check=True,
-        )
+        _git_retry(["git", "-C", str(repo_path), "fetch", "origin", branch])
         subprocess.run(
             ["git", "-C", str(repo_path), "reset", "--hard", f"origin/{branch}"],
             check=True,
+            timeout=30,
         )
     else:
         print(f"  Cloning {repo_url}@{branch} into {repo_path}...")
-        subprocess.run(
+        _git_retry(
             [
                 "git",
                 "clone",
@@ -79,8 +97,7 @@ def ensure_repo(repo_path: Path, repo_url: str, branch: str) -> Path:
                 branch,
                 repo_url,
                 str(repo_path),
-            ],
-            check=True,
+            ]
         )
     return repo_path.resolve()
 
@@ -91,6 +108,7 @@ def current_sha(repo_path: Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=10,
     ).stdout.strip()
 
 
@@ -204,7 +222,7 @@ def write_manifest(
         "source_branch": source_branch,
         "source_sha": source_sha,
         "source_published": None,
-        "built_at": datetime.now(timezone.utc).isoformat(),
+        "built_at": datetime.now(UTC).isoformat(),
         "chunk_count": chunk_count,
         "embedding_model": model_id,
         "embedding_dim": embedding_dim,
@@ -271,7 +289,12 @@ def _run() -> int:
     if args.skip_embed:
         print("  --skip-embed set; bundle contains chunks only")
         write_manifest(
-            args.output, args.repo_url, args.branch, sha, len(df), args.model,
+            args.output,
+            args.repo_url,
+            args.branch,
+            sha,
+            len(df),
+            args.model,
             embedding_dim=768,
         )
         return 0

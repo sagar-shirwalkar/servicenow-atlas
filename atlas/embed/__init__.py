@@ -24,18 +24,18 @@ will be chosen (used by ``atlas-doctor``).
 
 from .base import (
     DEFAULT_MODEL_ID,
-    Embedder,
     EMBEDDING_DIM,
     MAX_SEQ_LENGTH,
+    Embedder,
     get_embedder,
-    resolve_backend,
     has_mlx,
     has_nvidia_gpu,
     has_onnxruntime_gpu,
     is_apple_silicon,
-    load_embeddings,
     l2_normalize,
+    load_embeddings,
     mean_pool,
+    resolve_backend,
 )
 
 __all__ = [

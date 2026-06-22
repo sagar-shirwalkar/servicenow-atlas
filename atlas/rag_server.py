@@ -25,25 +25,29 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import structlog
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .embed import (
     DEFAULT_MODEL_ID,
-    Embedder,
     get_embedder,
     load_embeddings,
     resolve_backend,
 )
+from .log import configure_logging, get_logger
+from .rerank import CrossEncoderReranker
 
 app = Server("servicenow-rag")
+logger = get_logger()
 
 
 class Bundle:
@@ -67,12 +71,24 @@ class Bundle:
         if bundled_model.is_file():
             model_id: str | Path = self.bundle_dir / "model"
         else:
-            # Bundle was built with MLX (or the model dir was pruned):
-            # fall back to the canonical HF model id. The ONNX or MLX
-            # backend will resolve it from the appropriate cache.
             model_id = DEFAULT_MODEL_ID
-        self.embedder = get_embedder(model_id, prefer=prefer)
+        try:
+            self.embedder = get_embedder(model_id, prefer=prefer)
+        except Exception as e:
+            logger.warning(
+                "Preferred embedder failed, falling back to ONNX+CPU",
+                model_id=str(model_id),
+                error=str(e),
+            )
+            self.embedder = get_embedder(DEFAULT_MODEL_ID, prefer="cpu")
         self._norms_safe = self.norms.clip(min=1e-9)
+
+    @staticmethod
+    def _title_boost(titles: pd.Series, query_tokens: set[str]) -> np.ndarray:
+        boost = np.zeros(len(titles), dtype=np.float32)
+        for t in query_tokens:
+            boost += titles.str.contains(t, na=False, regex=False).values.astype(np.float32)
+        return boost * 0.05
 
     def search(
         self,
@@ -82,30 +98,84 @@ class Bundle:
         product_area: str | None = None,
         is_code: bool | None = None,
         min_score: float = 0.0,
+        mode: str = "vector",
+        candidate_k: int | None = None,
     ) -> list[dict[str, Any]]:
         q = self.embedder.embed([query])[0]
-        scores = (self.embeddings @ q).flatten() / self._norms_safe
+        vec_scores = (self.embeddings @ q).flatten() / self._norms_safe
+        query_tokens = set(query.lower().split())
+        tb = self._title_boost(self.chunks["title"], query_tokens) if query_tokens else 0.0
+        boosted = vec_scores + tb
 
         mask = np.ones(len(self.chunks), dtype=bool)
         if publication:
-            mask &= (self.chunks["publication"].values == publication)
+            mask &= self.chunks["publication"].values == publication
         if product_area:
-            mask &= (self.chunks["product_area"].values == product_area)
+            mask &= self.chunks["product_area"].values == product_area
         if is_code is not None:
-            mask &= (self.chunks["is_code"].values == bool(is_code))
+            mask &= self.chunks["is_code"].values == bool(is_code)
 
-        masked_scores = np.where(mask, scores, -np.inf)
-        k = min(top_k, int(mask.sum()))
-        if k == 0:
+        if mode == "vector":
+            if candidate_k is not None:
+                masked = np.where(mask, boosted, -np.inf)
+                pool = min(candidate_k, int(mask.sum()))
+                if pool == 0:
+                    return []
+                pool_idx = np.argpartition(-masked, pool - 1)[:pool]
+                order = np.argsort(-boosted[pool_idx])
+                pool_idx = pool_idx[order]
+                return self._collect(min_score, boosted[pool_idx], boosted[pool_idx], pool, idx_map=pool_idx)
+            scores = np.where(mask, boosted, -np.inf)
+            order = np.argsort(-scores)
+            return self._collect(min_score, scores[order], scores[order], top_k, idx_map=order)
+
+        candidate_pool = max(top_k * 20, 50)
+        masked = np.where(mask, boosted, -np.inf)
+        pool_size = min(candidate_pool, int(mask.sum()))
+        if pool_size == 0:
             return []
-        top_idx = np.argpartition(-masked_scores, k - 1)[:k]
-        top_idx = top_idx[np.argsort(-masked_scores[top_idx])]
+        pool_idx = np.argpartition(-masked, pool_size - 1)[:pool_size]
 
+        if not query_tokens:
+            order = np.argsort(-boosted[pool_idx])
+            pool_idx = pool_idx[order]
+            return self._collect(min_score, boosted[pool_idx], boosted[pool_idx], top_k)
+
+        kw_raw = np.array(
+            [sum(t in self.chunks.iloc[i]["text"].lower() for t in query_tokens) for i in pool_idx],
+            dtype=np.float32,
+        )
+
+        if mode == "keyword":
+            scores = kw_raw + tb[pool_idx]
+            vec_ref = kw_raw
+        else:
+            kw_max = kw_raw.max()
+            kw_norm = kw_raw / kw_max if kw_max > 0 else kw_raw
+            scores = 0.6 * boosted[pool_idx] + 0.4 * kw_norm
+            vec_ref = boosted[pool_idx]
+
+        order = np.argsort(-scores)
+        pool_idx = pool_idx[order]
+        scores = scores[order]
+        vec_ref = vec_ref[order]
+
+        return self._collect(min_score, scores, vec_ref, top_k, idx_map=pool_idx)
+
+    def _collect(
+        self,
+        min_score: float,
+        scores: np.ndarray,
+        vec_ref: np.ndarray,
+        top_k: int,
+        idx_map: np.ndarray | None = None,
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        for i in top_idx:
-            score = float(scores[i])
+        for rank in range(min(top_k, len(scores))):
+            score = float(scores[rank])
             if score < min_score:
                 continue
+            i = idx_map[rank] if idx_map is not None else rank
             row = self.chunks.iloc[i]
             results.append(
                 {
@@ -161,6 +231,7 @@ async def list_tools() -> list[Tool]:
                     "publication": {"type": "string"},
                     "product_area": {"type": "string"},
                     "min_score": {"type": "number", "default": 0.0, "minimum": -1.0, "maximum": 1.0},
+                    "mode": {"type": "string", "enum": ["vector", "hybrid", "keyword"], "default": "vector"},
                 },
                 "required": ["query"],
             },
@@ -175,6 +246,7 @@ async def list_tools() -> list[Tool]:
                     "top_k": {"type": "integer", "default": 5, "minimum": 1, "maximum": 50},
                     "publication": {"type": "string"},
                     "min_score": {"type": "number", "default": 0.0},
+                    "mode": {"type": "string", "enum": ["vector", "hybrid", "keyword"], "default": "vector"},
                 },
                 "required": ["query"],
             },
@@ -198,58 +270,97 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    cid = str(uuid.uuid4())[:8]
+    structlog.contextvars.bind_contextvars(correlation_id=cid)
+    _start = time.perf_counter()
+    logger.info("Tool called", tool=name)
+
     try:
-        bundle = _bundle_cache(ARGS.bundle, ARGS.prefer)
+        args = _get_args()
+        bundle = await _bundle_cache(args.bundle, args.prefer)
     except FileNotFoundError as e:
+        logger.warning("Bundle not found", error=str(e))
         return _result({"error": str(e)})
 
-    if name == "get_bundle_info":
-        return _result(bundle.manifest)
+    try:
+        if name == "get_bundle_info":
+            return _result(bundle.manifest)
 
-    if name == "search_docs":
-        return _result(
-            bundle.search(
+        top_k = arguments.get("top_k", 5)
+        reranker = await _get_reranker()
+        search_kw: dict[str, Any] = {
+            "publication": arguments.get("publication"),
+            "product_area": arguments.get("product_area"),
+            "min_score": arguments.get("min_score", 0.0),
+            "mode": arguments.get("mode", "vector"),
+        }
+
+        if name == "search_docs":
+            results = bundle.search(
                 arguments["query"],
-                top_k=arguments.get("top_k", 5),
-                publication=arguments.get("publication"),
-                product_area=arguments.get("product_area"),
-                min_score=arguments.get("min_score", 0.0),
+                top_k=100 if reranker else top_k,
+                candidate_k=100 if reranker else None,
+                **search_kw,
             )
-        )
+            if reranker and results:
+                results = reranker.rerank(arguments["query"], results, top_k=top_k)
+            return _result(results)
 
-    if name == "search_code":
-        return _result(
-            bundle.search(
+        if name == "search_code":
+            results = bundle.search(
                 arguments["query"],
-                top_k=arguments.get("top_k", 5),
-                publication=arguments.get("publication"),
+                top_k=100 if reranker else top_k,
                 is_code=True,
-                min_score=arguments.get("min_score", 0.0),
+                candidate_k=100 if reranker else None,
+                **search_kw,
             )
-        )
+            if reranker and results:
+                results = reranker.rerank(arguments["query"], results, top_k=top_k)
+            return _result(results)
 
-    if name == "get_chunk":
-        chunk = bundle.get_chunk(arguments["chunk_id"])
-        if chunk is None:
-            return _result({"error": f"chunk_id not found: {arguments['chunk_id']}"})
-        return _result(chunk)
+        if name == "get_chunk":
+            chunk = bundle.get_chunk(arguments["chunk_id"])
+            if chunk is None:
+                return _result({"error": f"chunk_id not found: {arguments['chunk_id']}"})
+            return _result(chunk)
 
-    raise ValueError(f"Unknown tool: {name}")
+        raise ValueError(f"Unknown tool: {name}")
+    finally:
+        elapsed = (time.perf_counter() - _start) * 1000
+        logger.info("Tool finished", tool=name, duration_ms=round(elapsed, 2))
 
 
 _bundle_instance: Bundle | None = None
+_reranker: CrossEncoderReranker | None = None
+_bundle_lock = asyncio.Lock()
+_reranker_lock = asyncio.Lock()
 
 
-def _bundle_cache(bundle_arg: str, prefer: str) -> Bundle:
+async def _bundle_cache(bundle_arg: str, prefer: str) -> Bundle:
     global _bundle_instance
-    if _bundle_instance is None:
+    if _bundle_instance is not None:
+        return _bundle_instance
+    async with _bundle_lock:
+        if _bundle_instance is not None:
+            return _bundle_instance
         bundle_path = Path(bundle_arg).expanduser()
         if not bundle_path.is_absolute():
             bundle_path = bundle_path.resolve()
         backend, reason = resolve_backend(prefer)
-        print(f"  RAG backend: {backend} ({reason})", file=sys.stderr)
+        logger.info("Backend resolved", backend=backend, reason=reason)
         _bundle_instance = Bundle(bundle_path, prefer=prefer)
     return _bundle_instance
+
+
+async def _get_reranker() -> CrossEncoderReranker | None:
+    global _reranker
+    if _reranker is not None or not _get_args().rerank:
+        return _reranker
+    async with _reranker_lock:
+        if _reranker is not None:
+            return _reranker
+        _reranker = CrossEncoderReranker()
+    return _reranker
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,10 +376,23 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Embedding backend preference: apple=MLX, nvidia=CUDA, cpu=ONNX+CPU, auto=probe",
     )
+    p.add_argument(
+        "--rerank",
+        action="store_true",
+        default=False,
+        help="Load a cross-encoder re-ranker (MiniLM-L6-v2) to refine top-100 vector results. Adds ~45 MB RAM and ~5 ms/query.",
+    )
     return p.parse_args()
 
 
-ARGS = parse_args()
+_ARGS: argparse.Namespace | None = None
+
+
+def _get_args() -> argparse.Namespace:
+    global _ARGS
+    if _ARGS is None:
+        _ARGS = parse_args()
+    return _ARGS
 
 
 async def serve() -> None:
@@ -277,6 +401,9 @@ async def serve() -> None:
 
 
 def main() -> None:
+    configure_logging()
+    # Ensure args are parsed before serving (triggers lazy init)
+    _ = _get_args()
     asyncio.run(serve())
 
 

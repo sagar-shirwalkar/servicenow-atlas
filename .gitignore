@@ -26,3 +26,6 @@ data/
 # Hugging Face model cache
 hf_cache/
 .cache/
+
+# macOS
+.DS_Store

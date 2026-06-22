@@ -12,7 +12,6 @@ replaces it with the chosen snapshot.
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +37,7 @@ def restore(snapshot: Path, bundle_dir: Path) -> None:
     subprocess.run(
         ["tar", "-xzf", str(snapshot), "-C", str(parent)],
         check=True,
+        timeout=120,
     )
     extracted = parent / name
     if not (extracted / "manifest.json").is_file():
@@ -60,9 +60,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Snapshot filename (default: --latest)",
     )
-    p.add_argument(
-        "--list", action="store_true", help="List available snapshots and exit"
-    )
+    p.add_argument("--list", action="store_true", help="List available snapshots and exit")
     p.add_argument(
         "--no-safety-snapshot",
         action="store_true",
@@ -84,12 +82,10 @@ def _run() -> int:
         subprocess.run(
             [sys.executable, "-m", "atlas.backup", "--bundle", str(args.bundle)],
             check=True,
+            timeout=120,
         )
 
-    if args.source:
-        snapshot = backup_dir / args.source
-    else:
-        snapshot = pick_latest(backup_dir)
+    snapshot = backup_dir / args.source if args.source else pick_latest(backup_dir)
     print(f"  Restoring {snapshot.name}...")
     restore(snapshot, args.bundle)
     return 0

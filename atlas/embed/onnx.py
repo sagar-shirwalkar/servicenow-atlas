@@ -15,9 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 from transformers import AutoTokenizer
-from transformers.utils.hub import cached_file
 
 from .base import (
     Embedder,
@@ -73,7 +72,7 @@ class OnnxEmbedder(Embedder):
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         so.intra_op_num_threads = os.cpu_count() or 4
-        onnx_path = cached_file(self.model_id, _ONNX_FILES[prefer_gpu])
+        onnx_path = hf_hub_download(self.model_id, _ONNX_FILES[prefer_gpu])
         self.session = ort.InferenceSession(
             str(onnx_path),
             sess_options=so,
@@ -104,8 +103,6 @@ class OnnxEmbedder(Embedder):
         # ndarray | SparseTensor | list | dict. The BGE model
         # always returns last_hidden_state as an ndarray first.
         hidden = outputs[0]
-        assert isinstance(hidden, np.ndarray), (
-            f"expected ndarray from BGE first output, got {type(hidden).__name__}"
-        )
+        assert isinstance(hidden, np.ndarray), f"expected ndarray from BGE first output, got {type(hidden).__name__}"
         pooled = mean_pool(hidden, encoded["attention_mask"])
         return l2_normalize(pooled)
